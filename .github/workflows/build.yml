@@ -351,10 +351,10 @@ jobs:
       - name: x64 build
         run: go build -v -tags android -trimpath -ldflags '-s -X github.com/rclone/rclone/fs.Version='${VERSION} -o build/rclone-android-${RCLONE_NDK_VERSION}-x64 .
 
-      - name: Upload artifacts
-        run: |
-          make ci_upload
-        env:
-          RCLONE_CONFIG_PASS: ${{ secrets.RCLONE_CONFIG_PASS }}
-        # Upload artifacts if not a PR && not a fork
-        if: env.RCLONE_CONFIG_PASS != '' && github.head_ref == '' && github.repository == 'rclone/rclone'
+      # - name: Upload artifacts
+      #   run: |
+      #     make ci_upload
+      #   env:
+      #     RCLONE_CONFIG_PASS: ${{ secrets.RCLONE_CONFIG_PASS }}
+      #   # Upload artifacts if not a PR && not a fork
+      #   if: env.RCLONE_CONFIG_PASS != '' && github.head_ref == '' && github.repository == 'rclone/rclone'

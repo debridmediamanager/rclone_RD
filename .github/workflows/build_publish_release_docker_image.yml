@@ -32,11 +32,11 @@ jobs:
               uses: ilteoood/docker_buildx@1.1.0
               with:
                 tag: latest,${{ steps.actual_patch_version.outputs.ACTUAL_PATCH_VERSION }},${{ steps.actual_minor_version.outputs.ACTUAL_MINOR_VERSION }},${{ steps.actual_major_version.outputs.ACTUAL_MAJOR_VERSION }}
-                imageName: itstoggle/rclone_rd
+                imageName: debridmediamanager/rclone_rd
                 platform: linux/amd64,linux/386,linux/arm64,linux/arm/v7,linux/arm/v6
                 publish: true
-                dockerHubUser: ${{ secrets.DOCKER_HUB_USER }}
-                dockerHubPassword: ${{ secrets.DOCKER_HUB_PASSWORD }}
+                dockerHubUser: ${{ secrets.DOCKERHUB_USERNAME }}
+                dockerHubPassword: ${{ secrets.DOCKERHUB_TOKEN }}
 
     build_docker_volume_plugin:
         if: github.repository == 'rclone/rclone'  || 1 == 1
@@ -52,9 +52,9 @@ jobs:
               shell: bash
               run: |
                 VER=${GITHUB_REF#refs/tags/}
-                PLUGIN_USER=itstoggle
-                docker login --username ${{ secrets.DOCKER_HUB_USER }} \
-                             --password-stdin <<< "${{ secrets.DOCKER_HUB_PASSWORD }}"
+                PLUGIN_USER=debridmediamanager
+                docker login --username ${{ secrets.DOCKERHUB_USERNAME }} \
+                             --password-stdin <<< "${{ secrets.DOCKERHUB_TOKEN }}"
                 for PLUGIN_ARCH in amd64 arm64 arm/v7 arm/v6 ;do
                     export PLUGIN_USER PLUGIN_ARCH
                     make docker-plugin PLUGIN_TAG=${PLUGIN_ARCH/\//-}
