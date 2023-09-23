@@ -20,7 +20,7 @@ Returns a JSON object:
 
 Where keys are remote names and values are the config parameters.
 
-See the [config dump command](/commands/rclone_config_dump/) command for more information on the above.
+See the [config dump](/commands/rclone_config_dump/) command for more information on the above.
 `,
 	})
 }
@@ -41,7 +41,7 @@ Parameters:
 
 - name - name of remote to get
 
-See the [config dump command](/commands/rclone_config_dump/) command for more information on the above.
+See the [config dump](/commands/rclone_config_dump/) command for more information on the above.
 `,
 	})
 }
@@ -59,23 +59,21 @@ func init() {
 	rc.Add(rc.Call{
 		Path:         "config/listremotes",
 		Fn:           rcListRemotes,
-		Title:        "Lists the remotes in the config file.",
+		Title:        "Lists the remotes in the config file and defined in environment variables.",
 		AuthRequired: true,
 		Help: `
 Returns
 - remotes - array of remote names
 
-See the [listremotes command](/commands/rclone_listremotes/) command for more information on the above.
+See the [listremotes](/commands/rclone_listremotes/) command for more information on the above.
 `,
 	})
 }
 
 // Return the a list of remotes in the config file
+// including any defined by environment variables.
 func rcListRemotes(ctx context.Context, in rc.Params) (out rc.Params, err error) {
-	var remotes = []string{}
-	for _, remote := range LoadedData().GetSectionList() {
-		remotes = append(remotes, remote)
-	}
+	remotes := FileSections()
 	out = rc.Params{
 		"remotes": remotes,
 	}
@@ -92,7 +90,7 @@ func init() {
 Returns a JSON object:
 - providers - array of objects
 
-See the [config providers command](/commands/rclone_config_providers/) command for more information on the above.
+See the [config providers](/commands/rclone_config_providers/) command for more information on the above.
 `,
 	})
 }
@@ -136,7 +134,7 @@ func init() {
 - parameters - a map of \{ "key": "value" \} pairs
 ` + extraHelp + `
 
-See the [config ` + name + ` command](/commands/rclone_config_` + name + `/) command for more information on the above.`,
+See the [config ` + name + `](/commands/rclone_config_` + name + `/) command for more information on the above.`,
 		})
 	}
 }
@@ -206,7 +204,7 @@ Parameters:
 
 - name - name of remote to delete
 
-See the [config delete command](/commands/rclone_config_delete/) command for more information on the above.
+See the [config delete](/commands/rclone_config_delete/) command for more information on the above.
 `,
 	})
 }
@@ -219,4 +217,28 @@ func rcDelete(ctx context.Context, in rc.Params) (out rc.Params, err error) {
 	}
 	DeleteRemote(name)
 	return nil, nil
+}
+
+func init() {
+	rc.Add(rc.Call{
+		Path:         "config/setpath",
+		Fn:           rcSetPath,
+		Title:        "Set the path of the config file",
+		AuthRequired: true,
+		Help: `
+Parameters:
+
+- path - path to the config file to use
+`,
+	})
+}
+
+// Set the config file path
+func rcSetPath(ctx context.Context, in rc.Params) (out rc.Params, err error) {
+	path, err := in.GetString("path")
+	if err != nil {
+		return nil, err
+	}
+	err = SetConfigPath(path)
+	return nil, err
 }

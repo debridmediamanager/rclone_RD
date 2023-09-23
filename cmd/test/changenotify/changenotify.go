@@ -20,12 +20,15 @@ var (
 func init() {
 	test.Command.AddCommand(commandDefinition)
 	cmdFlags := commandDefinition.Flags()
-	flags.DurationVarP(cmdFlags, &pollInterval, "poll-interval", "", pollInterval, "Time to wait between polling for changes")
+	flags.DurationVarP(cmdFlags, &pollInterval, "poll-interval", "", pollInterval, "Time to wait between polling for changes", "")
 }
 
 var commandDefinition = &cobra.Command{
 	Use:   "changenotify remote:",
 	Short: `Log any change notify requests for the remote passed in.`,
+	Annotations: map[string]string{
+		"versionIntroduced": "v1.56",
+	},
 	RunE: func(command *cobra.Command, args []string) error {
 		cmd.CheckArgs(1, 1, command, args)
 		f := cmd.NewFsSrc(args)

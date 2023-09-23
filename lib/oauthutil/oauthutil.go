@@ -1,3 +1,4 @@
+// Package oauthutil provides OAuth utilities.
 package oauthutil
 
 import (
@@ -9,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +23,11 @@ import (
 	"github.com/rclone/rclone/lib/random"
 	"github.com/skratchdot/open-golang/open"
 	"golang.org/x/oauth2"
+)
+
+var (
+	// templateString is the template used in the authorization webserver
+	templateString string
 )
 
 const (
@@ -48,8 +55,8 @@ const (
 	// redirects to the local webserver
 	RedirectPublicSecureURL = "https://oauth.rclone.org/"
 
-	// AuthResponseTemplate is a template to handle the redirect URL for oauth requests
-	AuthResponseTemplate = `<!DOCTYPE html>
+	// DefaultAuthResponseTemplate is the default template used in the authorization webserver
+	DefaultAuthResponseTemplate = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -75,15 +82,18 @@ All done. Please go back to rclone.
 
 // SharedOptions are shared between backends the utilize an OAuth flow
 var SharedOptions = []fs.Option{{
-	Name: config.ConfigClientID,
-	Help: "OAuth Client Id.\n\nLeave blank normally.",
+	Name:      config.ConfigClientID,
+	Help:      "OAuth Client Id.\n\nLeave blank normally.",
+	Sensitive: true,
 }, {
-	Name: config.ConfigClientSecret,
-	Help: "OAuth Client Secret.\n\nLeave blank normally.",
+	Name:      config.ConfigClientSecret,
+	Help:      "OAuth Client Secret.\n\nLeave blank normally.",
+	Sensitive: true,
 }, {
-	Name:     config.ConfigToken,
-	Help:     "OAuth Access Token as a JSON blob.",
-	Advanced: true,
+	Name:      config.ConfigToken,
+	Help:      "OAuth Access Token as a JSON blob.",
+	Advanced:  true,
+	Sensitive: true,
 }, {
 	Name:     config.ConfigAuthURL,
 	Help:     "Auth server URL.\n\nLeave blank to use the provider defaults.",
@@ -203,6 +213,37 @@ func (ts *TokenSource) reReadToken() (changed bool) {
 	return changed
 }
 
+type retrieveErrResponse struct {
+	Error string `json:"error"`
+}
+
+// If err is nil or an error other than fatal OAuth errors, returns err itself.
+// Otherwise returns a more user-friendly error.
+func maybeWrapOAuthError(err error, remoteName string) (newErr error) {
+	newErr = err
+	if rErr, ok := err.(*oauth2.RetrieveError); ok {
+		if rErr.Response.StatusCode == 400 || rErr.Response.StatusCode == 401 {
+			fs.Debugf(remoteName, "got fatal oauth error: %v", rErr)
+			var resp retrieveErrResponse
+			if err = json.Unmarshal(rErr.Body, &resp); err != nil {
+				newErr = fmt.Errorf("(can't decode error info) - try refreshing token with \"rclone config reconnect %s:\"", remoteName)
+				return
+			}
+			var suggestion string
+			switch resp.Error {
+			case "invalid_client", "unauthorized_client", "unsupported_grant_type", "invalid_scope":
+				suggestion = "if you're using your own client id/secret, make sure they're properly set up following the docs"
+			case "invalid_grant":
+				fallthrough
+			default:
+				suggestion = fmt.Sprintf("maybe token expired? - try refreshing with \"rclone config reconnect %s:\"", remoteName)
+			}
+			newErr = fmt.Errorf("%s: %s", resp.Error, suggestion)
+		}
+	}
+	return
+}
+
 // Token returns a token or an error.
 // Token must be safe for concurrent use by multiple goroutines.
 // The returned Token must not be modified.
@@ -241,11 +282,15 @@ func (ts *TokenSource) Token() (*oauth2.Token, error) {
 		if err == nil {
 			break
 		}
+		if newErr := maybeWrapOAuthError(err, ts.name); newErr != err {
+			err = newErr // Fatal OAuth error
+			break
+		}
 		fs.Debugf(ts.name, "Token refresh failed try %d/%d: %v", i, maxTries, err)
 		time.Sleep(1 * time.Second)
 	}
 	if err != nil {
-		return nil, fmt.Errorf("couldn't fetch token - maybe it has expired? - refresh with \"rclone config reconnect %s:\": %w", ts.name, err)
+		return nil, fmt.Errorf("couldn't fetch token: %w", err)
 	}
 	changed = changed || (*token != *ts.token)
 	ts.token = token
@@ -269,6 +314,23 @@ func (ts *TokenSource) Invalidate() {
 	ts.mu.Unlock()
 }
 
+// Expire marks the token as expired
+//
+// This also marks the token in the config file as expired, if it is the same one
+func (ts *TokenSource) Expire() error {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ts.token.Expiry = time.Now().Add(time.Hour * (-1)) // expire token
+	t, err := GetToken(ts.name, ts.m)
+	if err != nil {
+		return err
+	}
+	if t.AccessToken == ts.token.AccessToken {
+		err = PutToken(ts.name, ts.m, ts.token, false)
+	}
+	return err
+}
+
 // timeToExpiry returns how long until the token expires
 //
 // Call with the lock held
@@ -280,7 +342,7 @@ func (ts *TokenSource) timeToExpiry() time.Duration {
 	if t.Expiry.IsZero() {
 		return 3e9 * time.Second // ~95 years
 	}
-	return t.Expiry.Sub(time.Now())
+	return time.Until(t.Expiry)
 }
 
 // OnExpiry returns a channel which has the time written to it when
@@ -416,10 +478,10 @@ func ConfigOut(state string, oAuth *Options) (*fs.ConfigOut, error) {
 //
 // This is called with a state which has pushed on it
 //
-//    state prefixed with "*oauth"
-//    state for oauth to return to
-//    state that returned the OAuth when we wish to recall it
-//    value that returned the OAuth
+//	state prefixed with "*oauth"
+//	state for oauth to return to
+//	state that returned the OAuth when we wish to recall it
+//	value that returned the OAuth
 func ConfigOAuth(ctx context.Context, name string, m configmap.Mapper, ri *fs.RegInfo, in fs.ConfigIn) (*fs.ConfigOut, error) {
 	stateParams, state := fs.StatePop(in.State)
 
@@ -462,7 +524,7 @@ func ConfigOAuth(ctx context.Context, name string, m configmap.Mapper, ri *fs.Re
 		if in.Result == "false" {
 			return fs.ConfigGoto(newState("*oauth-done"))
 		}
-		return fs.ConfigConfirm(newState("*oauth-islocal"), true, "config_is_local", "Use auto config?\n * Say Y if not sure\n * Say N if you are working on a remote or headless machine\n")
+		return fs.ConfigConfirm(newState("*oauth-islocal"), true, "config_is_local", "Use web browser to automatically authenticate rclone with remote?\n * Say Y if the machine running rclone has a web browser you can use\n * Say N if running rclone on a (remote) machine without web browser access\nIf not sure try Y. If Y failed, try N.\n")
 	case "*oauth-islocal":
 		if in.Result == "true" {
 			return fs.ConfigGoto(newState("*oauth-do"))
@@ -534,6 +596,23 @@ version recommended):
 		}
 		return fs.ConfigGoto(newState("*oauth-done"))
 	case "*oauth-do":
+		// Make sure we can read the HTML template file if it was specified.
+		configTemplateFile, _ := m.Get("config_template_file")
+		configTemplateString, _ := m.Get("config_template")
+
+		if configTemplateFile != "" {
+			dat, err := os.ReadFile(configTemplateFile)
+
+			if err != nil {
+				return nil, fmt.Errorf("failed to read template file: %w", err)
+			}
+
+			templateString = string(dat)
+		} else if configTemplateString != "" {
+			templateString = configTemplateString
+		} else {
+			templateString = DefaultAuthResponseTemplate
+		}
 		code := in.Result
 		opt, err := getOAuth()
 		if err != nil {
@@ -607,7 +686,7 @@ func fixRedirect(oauthConfig *oauth2.Config) *oauth2.Config {
 
 // configSetup does the initial creation of the token
 //
-// If opt is nil it will use the default Options
+// If opt is nil it will use the default Options.
 //
 // It will run an internal webserver to receive the results
 func configSetup(ctx context.Context, id, name string, m configmap.Mapper, oauthConfig *oauth2.Config, opt *Options) (string, error) {
@@ -702,7 +781,7 @@ func (s *authServer) handleAuth(w http.ResponseWriter, req *http.Request) {
 	reply := func(status int, res *AuthResult) {
 		w.WriteHeader(status)
 		w.Header().Set("Content-Type", "text/html")
-		var t = template.Must(template.New("authResponse").Parse(AuthResponseTemplate))
+		var t = template.Must(template.New("authResponse").Parse(templateString))
 		if err := t.Execute(w, res); err != nil {
 			fs.Debugf(nil, "Could not execute template for web response.")
 		}
@@ -766,7 +845,6 @@ func (s *authServer) Init() error {
 		}
 		fs.Debugf(nil, "Redirecting browser to: %s", s.authURL)
 		http.Redirect(w, req, s.authURL, http.StatusTemporaryRedirect)
-		return
 	})
 	mux.HandleFunc("/", s.handleAuth)
 

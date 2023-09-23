@@ -1,3 +1,4 @@
+// Package api provides types used by the Backblaze B2 API.
 package api
 
 import (
@@ -32,10 +33,18 @@ var _ fserrors.Fataler = (*Error)(nil)
 
 // Bucket describes a B2 bucket
 type Bucket struct {
-	ID        string `json:"bucketId"`
-	AccountID string `json:"accountId"`
-	Name      string `json:"bucketName"`
-	Type      string `json:"bucketType"`
+	ID             string          `json:"bucketId"`
+	AccountID      string          `json:"accountId"`
+	Name           string          `json:"bucketName"`
+	Type           string          `json:"bucketType"`
+	LifecycleRules []LifecycleRule `json:"lifecycleRules,omitempty"`
+}
+
+// LifecycleRule is a single lifecycle rule
+type LifecycleRule struct {
+	DaysFromHidingToDeleting  *int   `json:"daysFromHidingToDeleting"`
+	DaysFromUploadingToHiding *int   `json:"daysFromUploadingToHiding"`
+	FileNamePrefix            string `json:"fileNamePrefix"`
 }
 
 // Timestamp is a UTC time when this file was uploaded. It is a base
@@ -205,9 +214,10 @@ type FileInfo struct {
 
 // CreateBucketRequest is used to create a bucket
 type CreateBucketRequest struct {
-	AccountID string `json:"accountId"`
-	Name      string `json:"bucketName"`
-	Type      string `json:"bucketType"`
+	AccountID      string          `json:"accountId"`
+	Name           string          `json:"bucketName"`
+	Type           string          `json:"bucketType"`
+	LifecycleRules []LifecycleRule `json:"lifecycleRules,omitempty"`
 }
 
 // DeleteBucketRequest is used to create a bucket
@@ -238,7 +248,7 @@ type GetFileInfoRequest struct {
 // If the original source of the file being uploaded has a last
 // modified time concept, Backblaze recommends using
 // src_last_modified_millis as the name, and a string holding the base
-// 10 number number of milliseconds since midnight, January 1, 1970
+// 10 number of milliseconds since midnight, January 1, 1970
 // UTC. This fits in a 64 bit integer such as the type "long" in the
 // programming language Java. It is intended to be compatible with
 // Java's time long. For example, it can be passed directly into the
@@ -329,4 +339,12 @@ type CopyPartRequest struct {
 	LargeFileID string `json:"largeFileId"`     // The ID of the large file the part will belong to, as returned by b2_start_large_file.
 	PartNumber  int64  `json:"partNumber"`      // Which part this is (starting from 1)
 	Range       string `json:"range,omitempty"` // The range of bytes to copy. If not provided, the whole source file will be copied.
+}
+
+// UpdateBucketRequest describes a request to modify a B2 bucket
+type UpdateBucketRequest struct {
+	ID             string          `json:"bucketId"`
+	AccountID      string          `json:"accountId"`
+	Type           string          `json:"bucketType,omitempty"`
+	LifecycleRules []LifecycleRule `json:"lifecycleRules,omitempty"`
 }

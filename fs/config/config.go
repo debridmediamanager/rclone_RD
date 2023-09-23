@@ -58,6 +58,12 @@ const (
 
 	// ConfigAuthNoBrowser indicates that we do not want to open browser
 	ConfigAuthNoBrowser = "config_auth_no_browser"
+
+	// ConfigTemplate is the template content to be used in the authorization webserver
+	ConfigTemplate = "config_template"
+
+	// ConfigTemplateFile is the path to a template file to read into the value of `ConfigTemplate` above
+	ConfigTemplateFile = "config_template_file"
 )
 
 // Storage defines an interface for loading and saving config to
@@ -117,6 +123,9 @@ func init() {
 	// Set the function pointers up in fs
 	fs.ConfigFileGet = FileGetFlag
 	fs.ConfigFileSet = SetValueAndSave
+	fs.ConfigFileHasSection = func(section string) bool {
+		return LoadedData().HasSection(section)
+	}
 	configPath = makeConfigPath()
 	cacheDir = makeCacheDir() // Has fallback to tempDir, so set that first
 	data = newDefaultStorage()
@@ -466,6 +475,9 @@ func updateRemote(ctx context.Context, name string, keyValues rc.Params, opt Upd
 	// Set the config
 	for k, v := range keyValues {
 		vStr := fmt.Sprint(v)
+		if strings.ContainsAny(k, "\n\r") || strings.ContainsAny(vStr, "\n\r") {
+			return nil, fmt.Errorf("update remote: invalid key or value contains \\n or \\r")
+		}
 		// Obscure parameter if necessary
 		if _, ok := needsObscure[k]; ok {
 			_, err := obscure.Reveal(vStr)
@@ -474,7 +486,7 @@ func updateRemote(ctx context.Context, name string, keyValues rc.Params, opt Upd
 				// or we are forced to obscure
 				vStr, err = obscure.Obscure(vStr)
 				if err != nil {
-					return nil, fmt.Errorf("UpdateRemote: obscure failed: %w", err)
+					return nil, fmt.Errorf("update remote: obscure failed: %w", err)
 				}
 			}
 		}

@@ -1,3 +1,4 @@
+// Package touch provides the touch command.
 package touch
 
 import (
@@ -33,10 +34,10 @@ const (
 func init() {
 	cmd.Root.AddCommand(commandDefinition)
 	cmdFlags := commandDefinition.Flags()
-	flags.BoolVarP(cmdFlags, &notCreateNewFile, "no-create", "C", false, "Do not create the file if it does not exist (implied with --recursive)")
-	flags.StringVarP(cmdFlags, &timeAsArgument, "timestamp", "t", "", "Use specified time instead of the current time of day")
-	flags.BoolVarP(cmdFlags, &localTime, "localtime", "", false, "Use localtime for timestamp, not UTC")
-	flags.BoolVarP(cmdFlags, &recursive, "recursive", "R", false, "Recursively touch all files")
+	flags.BoolVarP(cmdFlags, &notCreateNewFile, "no-create", "C", false, "Do not create the file if it does not exist (implied with --recursive)", "")
+	flags.StringVarP(cmdFlags, &timeAsArgument, "timestamp", "t", "", "Use specified time instead of the current time of day", "")
+	flags.BoolVarP(cmdFlags, &localTime, "localtime", "", false, "Use localtime for timestamp, not UTC", "")
+	flags.BoolVarP(cmdFlags, &recursive, "recursive", "R", false, "Recursively touch all files", "")
 }
 
 var commandDefinition = &cobra.Command{
@@ -51,7 +52,7 @@ unless ` + "`--no-create`" + ` or ` + "`--recursive`" + ` is provided.
 
 If ` + "`--recursive`" + ` is used then recursively sets the modification
 time on all existing files that is found under the path. Filters are supported,
-and you can test with the ` + "`--dry-run`" + ` or the ` + "`--interactive`" + ` flag.
+and you can test with the ` + "`--dry-run`" + ` or the ` + "`--interactive`/`-i`" + ` flag.
 
 If ` + "`--timestamp`" + ` is used then sets the modification time to that
 time instead of the current time. Times may be specified as one of:
@@ -63,6 +64,10 @@ time instead of the current time. Times may be specified as one of:
 Note that value of ` + "`--timestamp`" + ` is in UTC. If you want local time
 then add the ` + "`--localtime`" + ` flag.
 `,
+	Annotations: map[string]string{
+		"versionIntroduced": "v1.39",
+		"groups":            "Filter,Listing,Important",
+	},
 	Run: func(command *cobra.Command, args []string) {
 		cmd.CheckArgs(1, 1, command, args)
 		f, remote := newFsDst(args)
@@ -137,18 +142,18 @@ func Touch(ctx context.Context, f fs.Fs, remote string) error {
 	file, err := f.NewObject(ctx, remote)
 	if err != nil {
 		if errors.Is(err, fs.ErrorObjectNotFound) {
-			// Touching non-existant path, possibly creating it as new file
+			// Touching non-existent path, possibly creating it as new file
 			if remote == "" {
 				fs.Logf(f, "Not touching empty directory")
 				return nil
 			}
 			if notCreateNewFile {
-				fs.Logf(f, "Not touching non-existent file due to --no-create")
+				fs.Logf(f, "Not touching nonexistent file due to --no-create")
 				return nil
 			}
 			if recursive {
 				// For consistency, --recursive never creates new files.
-				fs.Logf(f, "Not touching non-existent file due to --recursive")
+				fs.Logf(f, "Not touching nonexistent file due to --recursive")
 				return nil
 			}
 			if operations.SkipDestructive(ctx, f, "touch (create)") {

@@ -163,6 +163,29 @@ const char* input = "{"
 With C++11 you can use raw string literals to avoid the C++ escaping of string
 constants, leaving escaping only necessary for the contained JSON.
 
+## Example in golang
+
+Here is a go example to help you move files : 
+
+```go
+func main() {
+  librclone.Initialize()
+    syncRequest: = syncRequest {
+    SrcFs: "<absolute_path>",
+    DstFs: ":s3,env_auth=false,access_key_id=<access>,secret_access_key=<secret>,endpoint='<endpoint>':<bucket>",
+    }
+
+    syncRequestJSON, err: = json.Marshal(syncRequest)
+    if err != nil {
+    fmt.Println(err)
+    }
+		
+    out, status: = librclone.RPC("sync/copy", string(syncRequestJSON))
+    fmt.Println("Got status : %d and output %q", status, out)
+}
+
+```
+
 ## gomobile
 
 The `gomobile` subdirectory contains the equivalent of the C binding but
@@ -216,6 +239,14 @@ This needs expanding and submitting to pypi...
 ## Rust
 
 Rust bindings are available in the `librclone` crate: https://crates.io/crates/librclone
+
+## PHP
+
+The `php` subdirectory contains how to use the C library librclone in php through foreign 
+function interface (FFI).
+
+Useful docs:
+- [PHP / FFI](https://www.php.net/manual/en/book.ffi.php)
 
 ## TODO
 

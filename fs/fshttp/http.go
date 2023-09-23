@@ -6,12 +6,12 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"io/ioutil"
 	"log"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httputil"
+	"os"
 	"sync"
 	"time"
 
@@ -53,6 +53,7 @@ func NewTransportCustom(ctx context.Context, customize func(*http.Transport)) ht
 	t.MaxIdleConns = 2 * t.MaxIdleConnsPerHost
 	t.TLSHandshakeTimeout = ci.ConnectTimeout
 	t.ResponseHeaderTimeout = ci.Timeout
+	t.DisableKeepAlives = ci.DisableHTTPKeepAlives
 
 	// TLS Config
 	t.TLSClientConfig = &tls.Config{
@@ -69,19 +70,22 @@ func NewTransportCustom(ctx context.Context, customize func(*http.Transport)) ht
 			log.Fatalf("Failed to load --client-cert/--client-key pair: %v", err)
 		}
 		t.TLSClientConfig.Certificates = []tls.Certificate{cert}
-		t.TLSClientConfig.BuildNameToCertificate()
 	}
 
-	// Load CA cert
-	if ci.CaCert != "" {
-		caCert, err := ioutil.ReadFile(ci.CaCert)
-		if err != nil {
-			log.Fatalf("Failed to read --ca-cert: %v", err)
-		}
+	// Load CA certs
+	if len(ci.CaCert) != 0 {
+
 		caCertPool := x509.NewCertPool()
-		ok := caCertPool.AppendCertsFromPEM(caCert)
-		if !ok {
-			log.Fatalf("Failed to add certificates from --ca-cert")
+
+		for _, cert := range ci.CaCert {
+			caCert, err := os.ReadFile(cert)
+			if err != nil {
+				log.Fatalf("Failed to read --ca-cert file %q : %v", cert, err)
+			}
+			ok := caCertPool.AppendCertsFromPEM(caCert)
+			if !ok {
+				log.Fatalf("Failed to add certificates from --ca-cert file %q", cert)
+			}
 		}
 		t.TLSClientConfig.RootCAs = caCertPool
 	}

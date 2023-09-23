@@ -1,3 +1,4 @@
+// Package putio provides an interface to the put.io storage system.
 package putio
 
 import (
@@ -66,7 +67,7 @@ func init() {
 				NoOffline:    true,
 			})
 		},
-		Options: []fs.Option{{
+		Options: append(oauthutil.SharedOptions, []fs.Option{{
 			Name:     config.ConfigEncoding,
 			Help:     config.ConfigEncodingHelp,
 			Advanced: true,
@@ -76,7 +77,7 @@ func init() {
 			Default: (encoder.Display |
 				encoder.EncodeBackSlash |
 				encoder.EncodeInvalidUtf8),
-		}},
+		}}...),
 	})
 }
 

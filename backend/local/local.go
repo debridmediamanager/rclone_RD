@@ -7,13 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -22,6 +22,7 @@ import (
 	"github.com/rclone/rclone/fs/config"
 	"github.com/rclone/rclone/fs/config/configmap"
 	"github.com/rclone/rclone/fs/config/configstruct"
+	"github.com/rclone/rclone/fs/filter"
 	"github.com/rclone/rclone/fs/fserrors"
 	"github.com/rclone/rclone/fs/hash"
 	"github.com/rclone/rclone/lib/encoder"
@@ -42,9 +43,22 @@ func init() {
 		Description: "Local Disk",
 		NewFs:       NewFs,
 		CommandHelp: commandHelp,
+		MetadataInfo: &fs.MetadataInfo{
+			System: systemMetadataInfo,
+			Help: `Depending on which OS is in use the local backend may return only some
+of the system metadata. Setting system metadata is supported on all
+OSes but setting user metadata is only supported on linux, freebsd,
+netbsd, macOS and Solaris. It is **not** supported on Windows yet
+([see pkg/attrs#47](https://github.com/pkg/xattr/issues/47)).
+
+User metadata is stored as extended attributes (which may not be
+supported by all file systems) under the "user.*" prefix.
+`,
+		},
 		Options: []fs.Option{{
 			Name:     "nounc",
 			Help:     "Disable UNC (long path names) conversion on Windows.",
+			Default:  false,
 			Advanced: runtime.GOOS != "windows",
 			Examples: []fs.OptionExample{{
 				Value: "true",
@@ -110,8 +124,8 @@ routine so this flag shouldn't normally be used.`,
 			Help: `Don't check to see if the files change during upload.
 
 Normally rclone checks the size and modification time of files as they
-are being uploaded and aborts with a message which starts "can't copy
-- source file is being updated" if the file changes during upload.
+are being uploaded and aborts with a message which starts "can't copy -
+source file is being updated" if the file changes during upload.
 
 However on some file systems this modification time check may fail (e.g.
 [Glusterfs #2206](https://github.com/rclone/rclone/issues/2206)) so this
@@ -221,15 +235,16 @@ type Options struct {
 
 // Fs represents a local filesystem rooted at root
 type Fs struct {
-	name        string              // the name of the remote
-	root        string              // The root directory (OS path)
-	opt         Options             // parsed config options
-	features    *fs.Features        // optional features
-	dev         uint64              // device number of root node
-	precisionOk sync.Once           // Whether we need to read the precision
-	precision   time.Duration       // precision of local filesystem
-	warnedMu    sync.Mutex          // used for locking access to 'warned'.
-	warned      map[string]struct{} // whether we have warned about this string
+	name           string              // the name of the remote
+	root           string              // The root directory (OS path)
+	opt            Options             // parsed config options
+	features       *fs.Features        // optional features
+	dev            uint64              // device number of root node
+	precisionOk    sync.Once           // Whether we need to read the precision
+	precision      time.Duration       // precision of local filesystem
+	warnedMu       sync.Mutex          // used for locking access to 'warned'.
+	warned         map[string]struct{} // whether we have warned about this string
+	xattrSupported atomic.Int32        // whether xattrs are supported
 
 	// do os.Lstat or os.Stat
 	lstat        func(name string) (os.FileInfo, error)
@@ -252,7 +267,10 @@ type Object struct {
 
 // ------------------------------------------------------------
 
-var errLinksAndCopyLinks = errors.New("can't use -l/--links with -L/--copy-links")
+var (
+	errLinksAndCopyLinks = errors.New("can't use -l/--links with -L/--copy-links")
+	errLinksNeedsSuffix  = errors.New("need \"" + linkSuffix + "\" suffix to refer to symlink when using -l/--links")
+)
 
 // NewFs constructs an Fs from the path
 func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, error) {
@@ -273,12 +291,20 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		dev:    devUnset,
 		lstat:  os.Lstat,
 	}
+	if xattrSupported {
+		f.xattrSupported.Store(1)
+	}
 	f.root = cleanRootPath(root, f.opt.NoUNC, f.opt.Enc)
 	f.features = (&fs.Features{
 		CaseInsensitive:         f.caseInsensitive(),
 		CanHaveEmptyDirectories: true,
 		IsLocal:                 true,
 		SlowHash:                true,
+		ReadMetadata:            true,
+		WriteMetadata:           true,
+		UserMetadata:            xattrSupported, // can only R/W general purpose metadata if xattrs are supported
+		FilterAware:             true,
+		PartialUploads:          true,
 	}).Fill(ctx, f)
 	if opt.FollowSymlinks {
 		f.lstat = os.Stat
@@ -289,7 +315,16 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 	if err == nil {
 		f.dev = readDevice(fi, f.opt.OneFileSystem)
 	}
+	// Check to see if this is a .rclonelink if not found
+	hasLinkSuffix := strings.HasSuffix(f.root, linkSuffix)
+	if hasLinkSuffix && opt.TranslateSymlinks && os.IsNotExist(err) {
+		fi, err = f.lstat(strings.TrimSuffix(f.root, linkSuffix))
+	}
 	if err == nil && f.isRegular(fi.Mode()) {
+		// Handle the odd case, that a symlink was specified by name without the link suffix
+		if !hasLinkSuffix && opt.TranslateSymlinks && fi.Mode()&os.ModeSymlink != 0 {
+			return nil, errLinksNeedsSuffix
+		}
 		// It is a file, so use the parent as the root
 		f.root = filepath.Dir(f.root)
 		// return an error with an fs which points to the parent
@@ -423,6 +458,8 @@ func (f *Fs) NewObject(ctx context.Context, remote string) (fs.Object, error) {
 // This should return ErrDirNotFound if the directory isn't
 // found.
 func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err error) {
+	filter, useFilter := filter.GetConfig(ctx), filter.GetUseFilter(ctx)
+
 	fsDirPath := f.localPath(dir)
 	_, err = os.Stat(fsDirPath)
 	if err != nil {
@@ -473,7 +510,14 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 						continue
 					}
 					if fierr != nil {
-						err = fmt.Errorf("failed to read directory %q: %w", namepath, err)
+						// Don't report errors on any file names that are excluded
+						if useFilter {
+							newRemote := f.cleanRemote(dir, name)
+							if !filter.IncludeRemote(newRemote) {
+								continue
+							}
+						}
+						fierr = fmt.Errorf("failed to get info about directory entry %q: %w", namepath, fierr)
 						fs.Errorf(dir, "%v", fierr)
 						_ = accounting.Stats(ctx).Error(fserrors.NoRetryError(fierr)) // fail the sync
 						continue
@@ -494,6 +538,10 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 			if f.opt.FollowSymlinks && (mode&os.ModeSymlink) != 0 {
 				localPath := filepath.Join(fsDirPath, name)
 				fi, err = os.Stat(localPath)
+				// Quietly skip errors on excluded files and directories
+				if err != nil && useFilter && !filter.IncludeRemote(newRemote) {
+					continue
+				}
 				if os.IsNotExist(err) || isCircularSymlinkError(err) {
 					// Skip bad symlinks and circular symlinks
 					err = fserrors.NoRetryError(fmt.Errorf("symlink: %w", err))
@@ -517,6 +565,11 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 				// Check whether this link should be translated
 				if f.opt.TranslateSymlinks && fi.Mode()&os.ModeSymlink != 0 {
 					newRemote += linkSuffix
+				}
+				// Don't include non directory if not included
+				// we leave directory filtering to the layer above
+				if useFilter && !filter.IncludeRemote(newRemote) {
+					continue
 				}
 				fso, err := f.newObjectWithInfo(newRemote, fi)
 				if err != nil {
@@ -589,7 +642,13 @@ func (f *Fs) Mkdir(ctx context.Context, dir string) error {
 //
 // If it isn't empty it will return an error
 func (f *Fs) Rmdir(ctx context.Context, dir string) error {
-	return os.Remove(f.localPath(dir))
+	localPath := f.localPath(dir)
+	if fi, err := os.Stat(localPath); err != nil {
+		return err
+	} else if !fi.IsDir() {
+		return fs.ErrorIsFile
+	}
+	return os.Remove(localPath)
 }
 
 // Precision of the file system
@@ -610,7 +669,7 @@ func (f *Fs) readPrecision() (precision time.Duration) {
 	precision = time.Second
 
 	// Create temporary file and test it
-	fd, err := ioutil.TempFile("", "rclone")
+	fd, err := os.CreateTemp("", "rclone")
 	if err != nil {
 		// If failed return 1s
 		// fmt.Println("Failed to create temp file", err)
@@ -679,9 +738,9 @@ func (f *Fs) Purge(ctx context.Context, dir string) error {
 
 // Move src to this remote using server-side move operations.
 //
-// This is stored with the remote path given
+// This is stored with the remote path given.
 //
-// It returns the destination Object and a possible error
+// It returns the destination Object and a possible error.
 //
 // Will only be called if src.Fs().Name() == f.Name()
 //
@@ -903,7 +962,7 @@ func (o *Object) Hash(ctx context.Context, r hash.Type) (string, error) {
 			return "", fmt.Errorf("hash: failed to open: %w", err)
 		}
 		var hashes map[hash.Type]string
-		hashes, err = hash.StreamTypes(in, hash.NewHashSet(r))
+		hashes, err = hash.StreamTypes(readers.NewContextReader(ctx, in), hash.NewHashSet(r))
 		closeErr := in.Close()
 		if err != nil {
 			return "", fmt.Errorf("hash: failed to read: %w", err)
@@ -937,17 +996,22 @@ func (o *Object) ModTime(ctx context.Context) time.Time {
 	return o.modTime
 }
 
+// Set the atime and ltime of the object
+func (o *Object) setTimes(atime, mtime time.Time) (err error) {
+	if o.translatedLink {
+		err = lChtimes(o.path, atime, mtime)
+	} else {
+		err = os.Chtimes(o.path, atime, mtime)
+	}
+	return err
+}
+
 // SetModTime sets the modification time of the local fs object
 func (o *Object) SetModTime(ctx context.Context, modTime time.Time) error {
 	if o.fs.opt.NoSetModTime {
 		return nil
 	}
-	var err error
-	if o.translatedLink {
-		err = lChtimes(o.path, modTime, modTime)
-	} else {
-		err = os.Chtimes(o.path, modTime, modTime)
-	}
+	err := o.setTimes(modTime, modTime)
 	if err != nil {
 		return err
 	}
@@ -1032,7 +1096,7 @@ func (o *Object) openTranslatedLink(offset, limit int64) (lrc io.ReadCloser, err
 	if err != nil {
 		return nil, err
 	}
-	return readers.NewLimitedReadCloser(ioutil.NopCloser(strings.NewReader(linkdst[offset:])), limit), nil
+	return readers.NewLimitedReadCloser(io.NopCloser(strings.NewReader(linkdst[offset:])), limit), nil
 }
 
 // Open an object for read
@@ -1222,6 +1286,16 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 		return err
 	}
 
+	// Fetch and set metadata if --metadata is in use
+	meta, err := fs.GetMetadataOptions(ctx, src, options)
+	if err != nil {
+		return fmt.Errorf("failed to read metadata from source object: %w", err)
+	}
+	err = o.writeMetadata(meta)
+	if err != nil {
+		return fmt.Errorf("failed to set metadata: %w", err)
+	}
+
 	// ReRead info now that we have finished
 	return o.lstat()
 }
@@ -1320,30 +1394,55 @@ func (o *Object) Remove(ctx context.Context) error {
 	return remove(o.path)
 }
 
+// Metadata returns metadata for an object
+//
+// It should return nil if there is no Metadata
+func (o *Object) Metadata(ctx context.Context) (metadata fs.Metadata, err error) {
+	metadata, err = o.getXattr()
+	if err != nil {
+		return nil, err
+	}
+	err = o.readMetadataFromFile(&metadata)
+	if err != nil {
+		return nil, err
+	}
+	return metadata, nil
+}
+
+// Write the metadata on the object
+func (o *Object) writeMetadata(metadata fs.Metadata) (err error) {
+	err = o.setXattr(metadata)
+	if err != nil {
+		return err
+	}
+	err = o.writeMetadataToFile(metadata)
+	if err != nil {
+		return err
+	}
+	return err
+}
+
 func cleanRootPath(s string, noUNC bool, enc encoder.MultiEncoder) string {
-	if runtime.GOOS == "windows" {
-		if !filepath.IsAbs(s) && !strings.HasPrefix(s, "\\") {
+	if runtime.GOOS != "windows" || !strings.HasPrefix(s, "\\") {
+		if !filepath.IsAbs(s) {
 			s2, err := filepath.Abs(s)
 			if err == nil {
 				s = s2
 			}
+		} else {
+			s = filepath.Clean(s)
 		}
+	}
+	if runtime.GOOS == "windows" {
 		s = filepath.ToSlash(s)
 		vol := filepath.VolumeName(s)
 		s = vol + enc.FromStandardPath(s[len(vol):])
 		s = filepath.FromSlash(s)
-
 		if !noUNC {
 			// Convert to UNC
 			s = file.UNCPath(s)
 		}
 		return s
-	}
-	if !filepath.IsAbs(s) {
-		s2, err := filepath.Abs(s)
-		if err == nil {
-			s = s2
-		}
 	}
 	s = enc.FromStandardPath(s)
 	return s
@@ -1359,4 +1458,5 @@ var (
 	_ fs.Commander      = &Fs{}
 	_ fs.OpenWriterAter = &Fs{}
 	_ fs.Object         = &Object{}
+	_ fs.Metadataer     = &Object{}
 )

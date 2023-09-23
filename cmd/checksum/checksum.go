@@ -1,3 +1,4 @@
+// Package checksum provides the checksum command.
 package checksum
 
 import (
@@ -18,7 +19,7 @@ var download = false
 func init() {
 	cmd.Root.AddCommand(commandDefinition)
 	cmdFlags := commandDefinition.Flags()
-	flags.BoolVarP(cmdFlags, &download, "download", "", download, "Check by hashing the contents")
+	flags.BoolVarP(cmdFlags, &download, "download", "", download, "Check by hashing the contents", "")
 	check.AddFlags(cmdFlags)
 }
 
@@ -36,6 +37,10 @@ that don't support hashes or if you really want to check all the data.
 
 Note that hash values in the SUM file are treated as case insensitive.
 `, "|", "`") + check.FlagsHelp,
+	Annotations: map[string]string{
+		"versionIntroduced": "v1.56",
+		"groups":            "Filter,Listing",
+	},
 	RunE: func(command *cobra.Command, args []string) error {
 		cmd.CheckArgs(3, 3, command, args)
 		var hashType hash.Type

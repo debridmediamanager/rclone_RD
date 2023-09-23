@@ -20,7 +20,7 @@ var (
 	pluginName  = "rclone"
 	pluginScope = "local"
 	baseDir     = "/var/lib/docker-volumes/rclone"
-	sockDir     = "/run/docker/plugins"
+	sockDir     = "/run/docker/plugins" //lint:ignore U1000 unused when not building linux
 	defSpecDir  = "/etc/docker/plugins"
 	stateFile   = "docker-plugin.state"
 	socketAddr  = "" // TCP listening address or empty string for Unix socket
@@ -33,11 +33,11 @@ var (
 func init() {
 	cmdFlags := Command.Flags()
 	// Add command specific flags
-	flags.StringVarP(cmdFlags, &baseDir, "base-dir", "", baseDir, "Base directory for volumes")
-	flags.StringVarP(cmdFlags, &socketAddr, "socket-addr", "", socketAddr, "Address <host:port> or absolute path (default: /run/docker/plugins/rclone.sock)")
-	flags.IntVarP(cmdFlags, &socketGid, "socket-gid", "", socketGid, "GID for unix socket (default: current process GID)")
-	flags.BoolVarP(cmdFlags, &forgetState, "forget-state", "", forgetState, "Skip restoring previous state")
-	flags.BoolVarP(cmdFlags, &noSpec, "no-spec", "", noSpec, "Do not write spec file")
+	flags.StringVarP(cmdFlags, &baseDir, "base-dir", "", baseDir, "Base directory for volumes", "")
+	flags.StringVarP(cmdFlags, &socketAddr, "socket-addr", "", socketAddr, "Address <host:port> or absolute path (default: /run/docker/plugins/rclone.sock)", "")
+	flags.IntVarP(cmdFlags, &socketGid, "socket-gid", "", socketGid, "GID for unix socket (default: current process GID)", "")
+	flags.BoolVarP(cmdFlags, &forgetState, "forget-state", "", forgetState, "Skip restoring previous state", "")
+	flags.BoolVarP(cmdFlags, &noSpec, "no-spec", "", noSpec, "Do not write spec file", "")
 	// Add common mount/vfs flags
 	mountlib.AddFlags(cmdFlags)
 	vfsflags.AddFlags(cmdFlags)
@@ -48,7 +48,10 @@ var Command = &cobra.Command{
 	Use:   "docker",
 	Short: `Serve any remote on docker's volume plugin API.`,
 	Long:  strings.ReplaceAll(longHelp, "|", "`") + vfs.Help,
-
+	Annotations: map[string]string{
+		"versionIntroduced": "v1.56",
+		"groups":            "Filter",
+	},
 	Run: func(command *cobra.Command, args []string) {
 		cmd.CheckArgs(0, 0, command, args)
 		cmd.Run(false, false, command, func() error {

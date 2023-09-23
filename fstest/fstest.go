@@ -9,7 +9,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"math/rand"
 	"os"
@@ -282,8 +281,8 @@ func CheckListingWithRoot(t *testing.T, f fs.Fs, dir string, items []Item, expec
 		if err != nil && err != fs.ErrorDirNotFound {
 			t.Fatalf("Error listing: %v", err)
 		}
-
 		gotListing = makeListingFromObjects(objs)
+
 		listingOK = wantListing == gotListing
 		if listingOK && (expectedDirs == nil || len(dirs) == len(expectedDirs)) {
 			// Put an extra sleep in if we did any retries just to make sure it really
@@ -411,7 +410,7 @@ func Time(timeString string) time.Time {
 
 // LocalRemote creates a temporary directory name for local remotes
 func LocalRemote() (path string, err error) {
-	path, err = ioutil.TempDir("", "rclone")
+	path, err = os.MkdirTemp("", "rclone")
 	if err == nil {
 		// Now remove the directory
 		err = os.Remove(path)

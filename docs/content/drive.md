@@ -1,6 +1,7 @@
 ---
 title: "Google drive"
 description: "Rclone docs for Google drive"
+versionIntroduced: "v0.91"
 ---
 
 # {{< icon "fab fa-google" >}} Google Drive
@@ -58,14 +59,13 @@ Choose a number from below, or type in your own value
  5 | does not allow any access to read or download file content.
    \ "drive.metadata.readonly"
 scope> 1
-ID of the root folder - leave blank normally.  Fill in to access "Computers" folders. (see docs).
-root_folder_id> 
 Service Account Credentials JSON file path - needed only if you want use SA instead of interactive login.
 service_account_file>
 Remote config
-Use auto config?
- * Say Y if not sure
- * Say N if you are working on a remote or headless machine or Y didn't work
+Use web browser to automatically authenticate rclone with remote?
+ * Say Y if the machine running rclone has a web browser you can use
+ * Say N if running rclone on a (remote) machine without web browser access
+If not sure try Y. If Y failed, try N.
 y) Yes
 n) No
 y/n> y
@@ -92,8 +92,12 @@ d) Delete this remote
 y/e/d> y
 ```
 
+See the [remote setup docs](/remote_setup/) for how to set it up on a
+machine with no Internet browser available.
+
 Note that rclone runs a webserver on your local machine to collect the
-token as returned from Google if you use auto config mode. This only
+token as returned from Google if using web browser to automatically 
+authenticate. This only
 runs from the moment it opens your browser to the moment you get back
 the verification code.  This is on `http://127.0.0.1:53682/` and it
 may require you to unblock it temporarily if you are running a host
@@ -161,7 +165,7 @@ directories.
 
 ### Root folder ID
 
-You can set the `root_folder_id` for rclone.  This is the directory
+This option has been moved to the advanced section. You can set the `root_folder_id` for rclone.  This is the directory
 (identified by its `Folder ID`) that rclone considers to be the root
 of your drive.
 
@@ -223,12 +227,9 @@ There's a few steps we need to go through to accomplish this:
 [Google Developer Console](https://console.developers.google.com).
   - You must have a project - create one if you don't.
   - Then go to "IAM & admin" -> "Service Accounts".
-  - Use the "Create Credentials" button. Fill in "Service account name"
-with something that identifies your client. "Role" can be empty.
-  - Tick "Furnish a new private key" - select "Key type JSON".
-  - Tick "Enable G Suite Domain-wide Delegation". This option makes
-"impersonation" possible, as documented here:
-[Delegating domain-wide authority to the service account](https://developers.google.com/identity/protocols/OAuth2ServiceAccount#delegatingauthority)
+  - Use the "Create Service Account" button. Fill in "Service account name"
+and "Service account ID" with something that identifies your client.
+  - Select "Create And Continue". Step 2 and 3 are optional.
   - These credentials are what rclone will use for authentication.
 If you ever need to remove access, press the "Delete service
 account key" button.
@@ -402,7 +403,7 @@ like a symlink in unix, except they point to the underlying file data
 (e.g. the inode in unix terms) so they don't break if the source is
 renamed or moved about.
 
-Be default rclone treats these as follows.
+By default rclone treats these as follows.
 
 For shortcuts pointing to files:
 
@@ -509,23 +510,28 @@ represent the currently available conversions.
 
 | Extension | Mime Type | Description |
 | --------- |-----------| ------------|
+| bmp  | image/bmp | Windows Bitmap format |
 | csv  | text/csv | Standard CSV format for Spreadsheets |
+| doc  | application/msword | Classic Word file |
 | docx | application/vnd.openxmlformats-officedocument.wordprocessingml.document | Microsoft Office Document |
 | epub | application/epub+zip | E-book format |
 | html | text/html | An HTML Document |
 | jpg  | image/jpeg | A JPEG Image File |
-| json | application/vnd.google-apps.script+json | JSON Text Format |
+| json | application/vnd.google-apps.script+json | JSON Text Format for Google Apps scripts |
 | odp  | application/vnd.oasis.opendocument.presentation | Openoffice Presentation |
 | ods  | application/vnd.oasis.opendocument.spreadsheet | Openoffice Spreadsheet |
 | ods  | application/x-vnd.oasis.opendocument.spreadsheet | Openoffice Spreadsheet |
 | odt  | application/vnd.oasis.opendocument.text | Openoffice Document |
 | pdf  | application/pdf | Adobe PDF Format |
+| pjpeg | image/pjpeg | Progressive JPEG Image |
 | png  | image/png | PNG Image Format|
 | pptx | application/vnd.openxmlformats-officedocument.presentationml.presentation | Microsoft Office Powerpoint |
 | rtf  | application/rtf | Rich Text Format |
 | svg  | image/svg+xml | Scalable Vector Graphics Format |
 | tsv  | text/tab-separated-values | Standard TSV format for spreadsheets |
 | txt  | text/plain | Plain Text |
+| wmf  | application/x-msmetafile | Windows Meta File |
+| xls  | application/vnd.ms-excel | Classic Excel file |
 | xlsx | application/vnd.openxmlformats-officedocument.spreadsheetml.sheet | Microsoft Office Spreadsheet |
 | zip  | application/zip | A ZIP file of HTML, Images CSS |
 
@@ -545,7 +551,7 @@ Google Documents.
 {{< rem autogenerated options start" - DO NOT EDIT - instead edit fs.RegInfo in backend/drive/drive.go then run make backenddocs" >}}
 ### Standard options
 
-Here are the standard options specific to drive (Google Drive).
+Here are the Standard options specific to drive (Google Drive).
 
 #### --drive-client-id
 
@@ -600,22 +606,6 @@ Properties:
         - Allows read-only access to file metadata but
         - does not allow any access to read or download file content.
 
-#### --drive-root-folder-id
-
-ID of the root folder.
-Leave blank normally.
-
-Fill in to access "Computers" folders (see docs), or for rclone to use
-a non root folder as its starting point.
-
-
-Properties:
-
-- Config:      root_folder_id
-- Env Var:     RCLONE_DRIVE_ROOT_FOLDER_ID
-- Type:        string
-- Required:    false
-
 #### --drive-service-account-file
 
 Service Account Credentials JSON file path.
@@ -645,7 +635,7 @@ Properties:
 
 ### Advanced options
 
-Here are the advanced options specific to drive (Google Drive).
+Here are the Advanced options specific to drive (Google Drive).
 
 #### --drive-token
 
@@ -681,6 +671,22 @@ Properties:
 
 - Config:      token_url
 - Env Var:     RCLONE_DRIVE_TOKEN_URL
+- Type:        string
+- Required:    false
+
+#### --drive-root-folder-id
+
+ID of the root folder.
+Leave blank normally.
+
+Fill in to access "Computers" folders (see docs), or for rclone to use
+a non root folder as its starting point.
+
+
+Properties:
+
+- Config:      root_folder_id
+- Env Var:     RCLONE_DRIVE_ROOT_FOLDER_ID
 - Type:        string
 - Required:    false
 
@@ -979,6 +985,10 @@ as malware or spam and cannot be downloaded" with the error code
 indicate you acknowledge the risks of downloading the file and rclone
 will download it anyway.
 
+Note that if you are using service account it will need Manager
+permission (not Content Manager) to for this flag to work. If the SA
+does not have the right permission, Google will just ignore the flag.
+
 Properties:
 
 - Config:      acknowledge_abuse
@@ -1055,6 +1065,8 @@ Properties:
 - Default:     100
 
 #### --drive-server-side-across-configs
+
+Deprecated: use --server-side-across-configs instead.
 
 Allow server-side operations (e.g. copy) to work across different drive configs.
 
@@ -1164,6 +1176,62 @@ Properties:
 - Type:        bool
 - Default:     false
 
+#### --drive-resource-key
+
+Resource key for accessing a link-shared file.
+
+If you need to access files shared with a link like this
+
+    https://drive.google.com/drive/folders/XXX?resourcekey=YYY&usp=sharing
+
+Then you will need to use the first part "XXX" as the "root_folder_id"
+and the second part "YYY" as the "resource_key" otherwise you will get
+404 not found errors when trying to access the directory.
+
+See: https://developers.google.com/drive/api/guides/resource-keys
+
+This resource key requirement only applies to a subset of old files.
+
+Note also that opening the folder once in the web interface (with the
+user you've authenticated rclone with) seems to be enough so that the
+resource key is not needed.
+
+
+Properties:
+
+- Config:      resource_key
+- Env Var:     RCLONE_DRIVE_RESOURCE_KEY
+- Type:        string
+- Required:    false
+
+#### --drive-fast-list-bug-fix
+
+Work around a bug in Google Drive listing.
+
+Normally rclone will work around a bug in Google Drive when using
+--fast-list (ListR) where the search "(A in parents) or (B in
+parents)" returns nothing sometimes. See #3114, #4289 and
+https://issuetracker.google.com/issues/149522397
+
+Rclone detects this by finding no items in more than one directory
+when listing and retries them as lists of individual directories.
+
+This means that if you have a lot of empty directories rclone will end
+up listing them all individually and this can take many more API
+calls.
+
+This flag allows the work-around to be disabled. This is **not**
+recommended in normal use - only if you have a particular case you are
+having trouble with like many empty directories.
+
+
+Properties:
+
+- Config:      fast_list_bug_fix
+- Env Var:     RCLONE_DRIVE_FAST_LIST_BUG_FIX
+- Type:        bool
+- Default:     true
+
 #### --drive-encoding
 
 The encoding for the backend.
@@ -1177,6 +1245,24 @@ Properties:
 - Type:        MultiEncoder
 - Default:     InvalidUtf8
 
+#### --drive-env-auth
+
+Get IAM credentials from runtime (environment variables or instance meta data if no env vars).
+
+Only applies if service_account_file and service_account_credentials is blank.
+
+Properties:
+
+- Config:      env_auth
+- Env Var:     RCLONE_DRIVE_ENV_AUTH
+- Type:        bool
+- Default:     false
+- Examples:
+    - "false"
+        - Enter credentials in the next step.
+    - "true"
+        - Get GCP IAM credentials from the environment (env vars or IAM).
+
 ## Backend commands
 
 Here are the commands specific to the drive backend.
@@ -1187,7 +1273,7 @@ Run them with
 
 The help below will explain what arguments each command takes.
 
-See [the "rclone backend" command](/commands/rclone_backend/) for more
+See the [backend](/commands/rclone_backend/) command for more
 info on how to pass options and arguments.
 
 These can be run on a running backend using the rc command
@@ -1289,7 +1375,7 @@ This will return a JSON list of objects like this
 
 With the -o config parameter it will output the list in a format
 suitable for adding to a config file to make aliases for all the
-drives found.
+drives found and a combined drive.
 
     [My Drive]
     type = alias
@@ -1299,10 +1385,15 @@ drives found.
     type = alias
     remote = drive,team_drive=0ABCDEFabcdefghijkl,root_folder_id=:
 
-Adding this to the rclone config file will cause those team drives to
-be accessible with the aliases shown. This may require manual editing
-of the names.
+    [AllDrives]
+    type = combine
+    upstreams = "My Drive=My Drive:" "Test Drive=Test Drive:"
 
+Adding this to the rclone config file will cause those team drives to
+be accessible with the aliases shown. Any illegal characters will be
+substituted with "_" and duplicate names will have numbers suffixed.
+It will also add a remote called AllDrives which shows all the shared
+drives combined into one directory tree.
 
 
 ### untrash
@@ -1320,9 +1411,9 @@ This takes an optional directory to trash which make this easier to
 use via the API.
 
     rclone backend untrash drive:directory
-    rclone backend -i untrash drive:directory subdir
+    rclone backend --interactive untrash drive:directory subdir
 
-Use the -i flag to see what would be restored before restoring it.
+Use the --interactive/-i or --dry-run flag to see what would be restored before restoring it.
 
 Result:
 
@@ -1356,8 +1447,20 @@ component will be used as the file name.
 If the destination is a drive backend then server-side copying will be
 attempted if possible.
 
-Use the -i flag to see what would be copied before copying.
+Use the --interactive/-i or --dry-run flag to see what would be copied before copying.
 
+
+### exportformats
+
+Dump the export formats for debug purposes
+
+    rclone backend exportformats remote: [options] [<arguments>+]
+
+### importformats
+
+Dump the import formats for debug purposes
+
+    rclone backend importformats remote: [options] [<arguments>+]
 
 {{< rem autogenerated options stop >}}
 
@@ -1447,19 +1550,26 @@ be the same account as the Google Drive you want to access)
 "Google Drive API".
 
 4. Click "Credentials" in the left-side panel (not "Create
-credentials", which opens the wizard), then "Create credentials"
+credentials", which opens the wizard).
 
 5. If you already configured an "Oauth Consent Screen", then skip
 to the next step; if not, click on "CONFIGURE CONSENT SCREEN" button 
 (near the top right corner of the right panel), then select "External"
 and click on "CREATE"; on the next screen, enter an "Application name"
 ("rclone" is OK); enter "User Support Email" (your own email is OK); 
-enter "Developer Contact Email" (your own email is OK); then click on "Save" (all other data is optional). 
-Click again on "Credentials" on the left panel to go back to the 
-"Credentials" screen.
+enter "Developer Contact Email" (your own email is OK); then click on
+"Save" (all other data is optional). You will also have to add some scopes,
+including `.../auth/docs` and `.../auth/drive` in order to be able to edit,
+create and delete files with RClone. You may also want to include the
+`../auth/drive.metadata.readonly` scope. After adding scopes, click
+"Save and continue" to add test users. Be sure to add your own account to
+the test users. Once you've added yourself as a test user and saved the
+changes, click again on "Credentials" on the left panel to go back to
+the "Credentials" screen.
 
-(PS: if you are a GSuite user, you could also select "Internal" instead
-of "External" above, but this has not been tested/documented so far). 
+   (PS: if you are a GSuite user, you could also select "Internal" instead
+of "External" above, but this will restrict API use to Google Workspace 
+users in your organisation). 
 
 6.  Click on the "+ CREATE CREDENTIALS" button at the top of the screen,
 then select "OAuth client ID".
@@ -1467,13 +1577,15 @@ then select "OAuth client ID".
 7. Choose an application type of "Desktop app" and click "Create". (the default name is fine)
 
 8. It will show you a client ID and client secret. Make a note of these.
+   
+   (If you selected "External" at Step 5 continue to Step 9. 
+   If you chose "Internal" you don't need to publish and can skip straight to
+   Step 10 but your destination drive must be part of the same Google Workspace.)
 
-9. Go to "Oauth consent screen" and press "Publish App"
+9. Go to "Oauth consent screen" and then click "PUBLISH APP" button and confirm.
+   You will also want to add yourself as a test user.
 
 10. Provide the noted client ID and client secret to rclone.
-
-11. Click "OAuth consent screen", then click "PUBLISH APP" button and 
-confirm, or add your account under "Test users".
 
 Be aware that, due to the "enhanced security" recently introduced by
 Google, you are theoretically expected to "submit your app for verification"
@@ -1481,7 +1593,11 @@ and then wait a few weeks(!) for their response; in practice, you can go right
 ahead and use the client ID and client secret with rclone, the only issue will
 be a very scary confirmation screen shown when you connect via your browser 
 for rclone to be able to get its token-id (but as this only happens during 
-the remote configuration, it's not such a big deal). 
+the remote configuration, it's not such a big deal). Keeping the application in
+"Testing" will work as well, but the limitation is that any grants will expire
+after a week, which can be annoying to refresh constantly. If, for whatever
+reason, a short grant time is not a problem, then keeping the application in
+testing mode would also be sufficient.
 
 (Thanks to @balazer on github for these instructions.)
 

@@ -58,7 +58,7 @@ import (
 const (
 	rcloneClientID              = "5jcck7diasz0rqy"
 	rcloneEncryptedClientSecret = "fRS5vVLr2v6FbyXYnIgjwBuUAt0osq_QZTXAEcmZ7g"
-	minSleep                    = 10 * time.Millisecond
+	defaultMinSleep             = fs.Duration(10 * time.Millisecond)
 	maxSleep                    = 2 * time.Second
 	decayConstant               = 2 // bigger for slower decay, exponential
 	// Upload chunk size - setting too small makes uploads slow.
@@ -182,8 +182,9 @@ client_secret) to use this option as currently rclone's default set of
 permissions doesn't include "members.read". This can be added once
 v1.55 or later is in use everywhere.
 `,
-			Default:  "",
-			Advanced: true,
+			Default:   "",
+			Advanced:  true,
+			Sensitive: true,
 		}, {
 			Name: "shared_files",
 			Help: `Instructs rclone to work on individual shared files.
@@ -260,16 +261,21 @@ uploaded.
 The default for this is 0 which means rclone will choose a sensible
 default based on the batch_mode in use.
 
-- batch_mode: async - default batch_timeout is 500ms
-- batch_mode: sync - default batch_timeout is 10s
+- batch_mode: async - default batch_timeout is 10s
+- batch_mode: sync - default batch_timeout is 500ms
 - batch_mode: off - not in use
 `,
 			Default:  fs.Duration(0),
 			Advanced: true,
 		}, {
 			Name:     "batch_commit_timeout",
-			Help:     `Max time to wait for a batch to finish comitting`,
+			Help:     `Max time to wait for a batch to finish committing`,
 			Default:  fs.Duration(10 * time.Minute),
+			Advanced: true,
+		}, {
+			Name:     "pacer_min_sleep",
+			Default:  defaultMinSleep,
+			Help:     "Minimum time to sleep between API calls.",
 			Advanced: true,
 		}, {
 			Name:     config.ConfigEncoding,
@@ -299,6 +305,7 @@ type Options struct {
 	BatchTimeout       fs.Duration          `config:"batch_timeout"`
 	BatchCommitTimeout fs.Duration          `config:"batch_commit_timeout"`
 	AsyncBatch         bool                 `config:"async_batch"`
+	PacerMinSleep      fs.Duration          `config:"pacer_min_sleep"`
 	Enc                encoder.MultiEncoder `config:"encoding"`
 }
 
@@ -442,7 +449,7 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		name:  name,
 		opt:   *opt,
 		ci:    ci,
-		pacer: fs.NewPacer(ctx, pacer.NewDefault(pacer.MinSleep(minSleep), pacer.MaxSleep(maxSleep), pacer.DecayConstant(decayConstant))),
+		pacer: fs.NewPacer(ctx, pacer.NewDefault(pacer.MinSleep(opt.PacerMinSleep), pacer.MaxSleep(maxSleep), pacer.DecayConstant(decayConstant))),
 	}
 	f.batcher, err = newBatcher(ctx, f, f.opt.BatchMode, f.opt.BatchSize, time.Duration(f.opt.BatchTimeout))
 	if err != nil {
@@ -472,9 +479,11 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		args := team.NewMembersGetInfoArgs(members)
 
 		memberIds, err := f.team.MembersGetInfo(args)
-
 		if err != nil {
 			return nil, fmt.Errorf("invalid dropbox team member: %q: %w", opt.Impersonate, err)
+		}
+		if len(memberIds) == 0 || memberIds[0].MemberInfo == nil || memberIds[0].MemberInfo.Profile == nil {
+			return nil, fmt.Errorf("dropbox team member not found: %q", opt.Impersonate)
 		}
 
 		cfg.AsMemberID = memberIds[0].MemberInfo.Profile.MemberProfile.TeamMemberId
@@ -534,7 +543,7 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 			default:
 				return nil, err
 			}
-			// if the moint failed we have to abort here
+			// if the mount failed we have to abort here
 		}
 		// if the mount succeeded it's now a normal folder in the users root namespace
 		// we disable shared folder mode and proceed normally
@@ -717,7 +726,7 @@ func (f *Fs) listSharedFolders(ctx context.Context) (entries fs.DirEntries, err 
 		}
 		for _, entry := range res.Entries {
 			leaf := f.opt.Enc.ToStandardName(entry.Name)
-			d := fs.NewDir(leaf, time.Now()).SetID(entry.SharedFolderId)
+			d := fs.NewDir(leaf, time.Time{}).SetID(entry.SharedFolderId)
 			entries = append(entries, d)
 			if err != nil {
 				return nil, err
@@ -904,7 +913,7 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 			leaf := f.opt.Enc.ToStandardName(path.Base(entryPath))
 			remote := path.Join(dir, leaf)
 			if folderInfo != nil {
-				d := fs.NewDir(remote, time.Now()).SetID(folderInfo.Id)
+				d := fs.NewDir(remote, time.Time{}).SetID(folderInfo.Id)
 				entries = append(entries, d)
 			} else if fileInfo != nil {
 				o, err := f.newObjectWithInfo(ctx, remote, fileInfo)
@@ -923,7 +932,7 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 
 // Put the object
 //
-// Copy the reader in to the new object which is returned
+// Copy the reader in to the new object which is returned.
 //
 // The new object may have been created if an error is returned
 func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
@@ -1042,9 +1051,9 @@ func (f *Fs) Precision() time.Duration {
 
 // Copy src to this remote using server-side copy operations.
 //
-// This is stored with the remote path given
+// This is stored with the remote path given.
 //
-// It returns the destination Object and a possible error
+// It returns the destination Object and a possible error.
 //
 // Will only be called if src.Fs().Name() == f.Name()
 //
@@ -1103,9 +1112,9 @@ func (f *Fs) Purge(ctx context.Context, dir string) (err error) {
 
 // Move src to this remote using server-side move operations.
 //
-// This is stored with the remote path given
+// This is stored with the remote path given.
 //
-// It returns the destination Object and a possible error
+// It returns the destination Object and a possible error.
 //
 // Will only be called if src.Fs().Name() == f.Name()
 //
@@ -1197,7 +1206,7 @@ func (f *Fs) PublicLink(ctx context.Context, remote string, expire fs.Duration, 
 			return
 		}
 		if len(listRes.Links) == 0 {
-			err = errors.New("Dropbox says the sharing link already exists, but list came back empty")
+			err = errors.New("sharing link already exists, but list came back empty")
 			return
 		}
 		linkRes = listRes.Links[0]
@@ -1209,7 +1218,7 @@ func (f *Fs) PublicLink(ctx context.Context, remote string, expire fs.Duration, 
 		case *sharing.FolderLinkMetadata:
 			link = res.Url
 		default:
-			err = fmt.Errorf("Don't know how to extract link, response has unknown format: %T", res)
+			err = fmt.Errorf("don't know how to extract link, response has unknown format: %T", res)
 		}
 	}
 	return
@@ -1433,7 +1442,7 @@ func (f *Fs) changeNotifyRunner(ctx context.Context, notifyFunc func(string, fs.
 			}
 
 			if entryPath != "" {
-				notifyFunc(entryPath, entryType)
+				notifyFunc(f.opt.Enc.ToStandardPath(entryPath), entryType)
 			}
 		}
 		if !changeList.HasMore {
@@ -1667,7 +1676,7 @@ func (o *Object) uploadChunked(ctx context.Context, in0 io.Reader, commitInfo *f
 						correctOffset := uErr.EndpointError.IncorrectOffset.CorrectOffset
 						delta := int64(correctOffset) - int64(cursor.Offset)
 						skip += delta
-						what := fmt.Sprintf("incorrect offset error receved: sent %d, need %d, skip %d", cursor.Offset, correctOffset, skip)
+						what := fmt.Sprintf("incorrect offset error received: sent %d, need %d, skip %d", cursor.Offset, correctOffset, skip)
 						if skip < 0 {
 							return false, fmt.Errorf("can't seek backwards to correct offset: %s", what)
 						} else if skip == chunkSize {
@@ -1695,6 +1704,9 @@ func (o *Object) uploadChunked(ctx context.Context, in0 io.Reader, commitInfo *f
 		if size > 0 {
 			// if size is known, check if next chunk is final
 			appendArg.Close = uint64(size)-in.BytesRead() <= uint64(chunkSize)
+			if in.BytesRead() > uint64(size) {
+				return nil, fmt.Errorf("expected %d bytes in input, but have read %d so far", size, in.BytesRead())
+			}
 		} else {
 			// if size is unknown, upload as long as we can read full chunks from the reader
 			appendArg.Close = in.BytesRead()-cursor.Offset < uint64(chunkSize)
@@ -1758,7 +1770,7 @@ func checkPathLength(name string) (err error) {
 
 // Update the already existing object
 //
-// Copy the reader into the object updating modTime and size
+// Copy the reader into the object updating modTime and size.
 //
 // The new object may have been created if an error is returned
 func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) error {

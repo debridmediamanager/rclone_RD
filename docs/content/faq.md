@@ -33,7 +33,7 @@ The syncs would be incremental (on a file by file basis).
 
 e.g.
 
-    rclone sync -i drive:Folder s3:bucket
+    rclone sync --interactive drive:Folder s3:bucket
 
 
 ### Using rclone from multiple locations at the same time ###
@@ -42,8 +42,8 @@ You can use rclone from multiple places at the same time if you choose
 different subdirectory for the output, e.g.
 
 ```
-Server A> rclone sync -i /tmp/whatever remote:ServerA
-Server B> rclone sync -i /tmp/whatever remote:ServerB
+Server A> rclone sync --interactive /tmp/whatever remote:ServerA
+Server B> rclone sync --interactive /tmp/whatever remote:ServerB
 ```
 
 If you sync to the same directory then you should use rclone copy
@@ -82,9 +82,8 @@ of metadata, which breaks the desired 1:1 mapping of files to objects.
 
 ### Can rclone do bi-directional sync? ###
 
-No, not at present.  rclone only does uni-directional sync from A ->
-B. It may do in the future though since it has all the primitives - it
-just requires writing the algorithm to do it.
+Yes, since rclone v1.58.0, [bidirectional cloud sync](/bisync/) is
+available.
 
 ### Can I use rclone with an HTTP proxy? ###
 
@@ -109,6 +108,14 @@ possibilities.  So, on Linux, you may end up with code similar to
     export HTTP_PROXY=$http_proxy
     export HTTPS_PROXY=$http_proxy
 
+
+Note: If the proxy server requires a username and password, then use
+
+    export http_proxy=http://username:password@proxyserver:12345
+    export https_proxy=$http_proxy
+    export HTTP_PROXY=$http_proxy
+    export HTTPS_PROXY=$http_proxy
+
 The `NO_PROXY` allows you to disable the proxy for specific hosts.
 Hosts must be comma separated, and can contain domains or parts.
 For instance "foo.com" also matches "bar.foo.com".
@@ -118,7 +125,7 @@ e.g.
     export no_proxy=localhost,127.0.0.0/8,my.host.name
     export NO_PROXY=$no_proxy
 
-Note that the ftp backend does not support `ftp_proxy` yet.
+Note that the FTP backend does not support `ftp_proxy` yet.
 
 ### Rclone gives x509: failed to load system roots and no roots provided error ###
 
@@ -183,9 +190,29 @@ If you are using `systemd-resolved` (default on Arch Linux), ensure it
 is at version 233 or higher. Previous releases contain a bug which
 causes not all domains to be resolved properly.
 
-Additionally with the `GODEBUG=netdns=` environment variable the Go
-resolver decision can be influenced. This also allows to resolve certain
-issues with DNS resolution. See the [name resolution section in the go docs](https://golang.org/pkg/net/#hdr-Name_Resolution).
+
+The Go resolver decision can be influenced with the `GODEBUG=netdns=...`
+environment variable. This also allows to resolve certain issues with
+DNS resolution. On Windows or MacOS systems, try forcing use of the
+internal Go resolver by setting `GODEBUG=netdns=go` at runtime. On
+other systems (Linux, \*BSD, etc) try forcing use of the system
+name resolver by setting `GODEBUG=netdns=cgo` (and recompile rclone
+from source with CGO enabled if necessary). See the
+[name resolution section in the go docs](https://golang.org/pkg/net/#hdr-Name_Resolution).
+
+### Failed to start auth webserver on Windows ###
+```
+Error: config failed to refresh token: failed to start auth webserver: listen tcp 127.0.0.1:53682: bind: An attempt was made to access a socket in a way forbidden by its access permissions.
+...
+yyyy/mm/dd hh:mm:ss Fatal error: config failed to refresh token: failed to start auth webserver: listen tcp 127.0.0.1:53682: bind: An attempt was made to access a socket in a way forbidden by its access permissions.
+```
+
+This is sometimes caused by the Host Network Service causing issues with opening the port on the host.
+
+A simple solution may be restarting the Host Network Service with eg. Powershell
+```
+Restart-Service hns
+```
 
 ### The total size reported in the stats for a sync is wrong and keeps changing
 

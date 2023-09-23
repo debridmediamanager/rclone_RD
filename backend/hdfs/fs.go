@@ -21,6 +21,7 @@ import (
 	"github.com/rclone/rclone/fs/config/configmap"
 	"github.com/rclone/rclone/fs/config/configstruct"
 	"github.com/rclone/rclone/fs/hash"
+	"github.com/rclone/rclone/lib/pacer"
 )
 
 // Fs represents a HDFS server
@@ -31,7 +32,14 @@ type Fs struct {
 	opt      Options        // options for this backend
 	ci       *fs.ConfigInfo // global config
 	client   *hdfs.Client
+	pacer    *fs.Pacer // pacer for API calls
 }
+
+const (
+	minSleep      = 20 * time.Millisecond
+	maxSleep      = 10 * time.Second
+	decayConstant = 2 // bigger for slower decay, exponential
+)
 
 // copy-paste from https://github.com/colinmarc/hdfs/blob/master/cmd/hdfs/kerberos.go
 func getKerberosClient() (*krb.Client, error) {
@@ -92,7 +100,7 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 	if opt.ServicePrincipalName != "" {
 		options.KerberosClient, err = getKerberosClient()
 		if err != nil {
-			return nil, fmt.Errorf("Problem with kerberos authentication: %s", err)
+			return nil, fmt.Errorf("problem with kerberos authentication: %w", err)
 		}
 		options.KerberosServicePrincipleName = opt.ServicePrincipalName
 
@@ -114,6 +122,7 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		opt:    *opt,
 		ci:     fs.GetConfig(ctx),
 		client: client,
+		pacer:  fs.NewPacer(ctx, pacer.NewDefault(pacer.MinSleep(minSleep), pacer.MaxSleep(maxSleep), pacer.DecayConstant(decayConstant))),
 	}
 
 	f.features = (&fs.Features{
@@ -265,9 +274,9 @@ func (f *Fs) Purge(ctx context.Context, dir string) error {
 
 // Move src to this remote using server-side move operations.
 //
-// This is stored with the remote path given
+// This is stored with the remote path given.
 //
-// It returns the destination Object and a possible error
+// It returns the destination Object and a possible error.
 //
 // Will only be called if src.Fs().Name() == f.Name()
 //

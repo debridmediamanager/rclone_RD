@@ -2,6 +2,7 @@ package accounting
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/rclone/rclone/fs/rc"
@@ -96,6 +97,10 @@ Returns the following values:
 	"lastError": last error string,
 	"renames" : number of files renamed,
 	"retryError": boolean showing whether there has been at least one non-NoRetryError,
+        "serverSideCopies": number of server side copies done,
+        "serverSideCopyBytes": number bytes server side copied,
+        "serverSideMoves": number of server side moves done,
+        "serverSideMoveBytes": number bytes server side moved,
 	"speed": average speed in bytes per second since start of the group,
 	"totalBytes": total number of bytes in the group,
 	"totalChecks": total number of checks in the group,
@@ -190,6 +195,9 @@ func rcResetStats(ctx context.Context, in rc.Params) (rc.Params, error) {
 
 	if group != "" {
 		stats := groups.get(group)
+		if stats == nil {
+			return rc.Params{}, fmt.Errorf("group %q not found", group)
+		}
 		stats.ResetErrors()
 		stats.ResetCounters()
 	} else {

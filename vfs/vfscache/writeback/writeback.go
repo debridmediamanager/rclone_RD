@@ -26,6 +26,9 @@ type Handle uint64
 
 // WriteBack keeps track of the items which need to be written back to the disk at some point
 type WriteBack struct {
+	// read and written with atomic, must be 64-bit aligned
+	id Handle // id of the last writeBackItem created
+
 	ctx     context.Context
 	mu      sync.Mutex
 	items   writeBackItems            // priority queue of *writeBackItem - writeBackItems are in here while awaiting transfer only
@@ -34,9 +37,6 @@ type WriteBack struct {
 	timer   *time.Timer               // next scheduled time for the uploader
 	expiry  time.Time                 // time the next item expires or IsZero
 	uploads int                       // number of uploads in progress
-
-	// read and written with atomic
-	id Handle // id of the last writeBackItem created
 }
 
 // New make a new WriteBack
@@ -252,7 +252,7 @@ func (wb *WriteBack) SetID(pid *Handle) {
 // If id is 0 then a new item will always be created and the new
 // Handle will be returned.
 //
-// Use SetID to create Handles in advance of calling Add
+// Use SetID to create Handles in advance of calling Add.
 //
 // If modified is false then it it doesn't cancel a pending upload if
 // there is one as there is no need.

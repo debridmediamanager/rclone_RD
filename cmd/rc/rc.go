@@ -1,3 +1,4 @@
+// Package rc provides the rc command.
 package rc
 
 import (
@@ -6,7 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -35,14 +36,14 @@ var (
 func init() {
 	cmd.Root.AddCommand(commandDefinition)
 	cmdFlags := commandDefinition.Flags()
-	flags.BoolVarP(cmdFlags, &noOutput, "no-output", "", noOutput, "If set, don't output the JSON result")
-	flags.StringVarP(cmdFlags, &url, "url", "", url, "URL to connect to rclone remote control")
-	flags.StringVarP(cmdFlags, &jsonInput, "json", "", jsonInput, "Input JSON - use instead of key=value args")
-	flags.StringVarP(cmdFlags, &authUser, "user", "", "", "Username to use to rclone remote control")
-	flags.StringVarP(cmdFlags, &authPass, "pass", "", "", "Password to use to connect to rclone remote control")
-	flags.BoolVarP(cmdFlags, &loopback, "loopback", "", false, "If set connect to this rclone instance not via HTTP")
-	flags.StringArrayVarP(cmdFlags, &options, "opt", "o", options, "Option in the form name=value or name placed in the \"opt\" array")
-	flags.StringArrayVarP(cmdFlags, &arguments, "arg", "a", arguments, "Argument placed in the \"arg\" array")
+	flags.BoolVarP(cmdFlags, &noOutput, "no-output", "", noOutput, "If set, don't output the JSON result", "")
+	flags.StringVarP(cmdFlags, &url, "url", "", url, "URL to connect to rclone remote control", "")
+	flags.StringVarP(cmdFlags, &jsonInput, "json", "", jsonInput, "Input JSON - use instead of key=value args", "")
+	flags.StringVarP(cmdFlags, &authUser, "user", "", "", "Username to use to rclone remote control", "")
+	flags.StringVarP(cmdFlags, &authPass, "pass", "", "", "Password to use to connect to rclone remote control", "")
+	flags.BoolVarP(cmdFlags, &loopback, "loopback", "", false, "If set connect to this rclone instance not via HTTP", "")
+	flags.StringArrayVarP(cmdFlags, &options, "opt", "o", options, "Option in the form name=value or name placed in the \"opt\" array", "")
+	flags.StringArrayVarP(cmdFlags, &arguments, "arg", "a", arguments, "Argument placed in the \"arg\" array", "")
 }
 
 var commandDefinition = &cobra.Command{
@@ -50,26 +51,26 @@ var commandDefinition = &cobra.Command{
 	Short: `Run a command against a running rclone.`,
 	Long: `
 
-This runs a command against a running rclone.  Use the --url flag to
+This runs a command against a running rclone.  Use the ` + "`--url`" + ` flag to
 specify an non default URL to connect on.  This can be either a
 ":port" which is taken to mean "http://localhost:port" or a
 "host:port" which is taken to mean "http://host:port"
 
-A username and password can be passed in with --user and --pass.
+A username and password can be passed in with ` + "`--user`" + ` and ` + "`--pass`" + `.
 
-Note that --rc-addr, --rc-user, --rc-pass will be read also for --url,
---user, --pass.
+Note that ` + "`--rc-addr`, `--rc-user`, `--rc-pass`" + ` will be read also for
+` + "`--url`, `--user`, `--pass`" + `.
 
 Arguments should be passed in as parameter=value.
 
 The result will be returned as a JSON object by default.
 
-The --json parameter can be used to pass in a JSON blob as an input
+The ` + "`--json`" + ` parameter can be used to pass in a JSON blob as an input
 instead of key=value arguments.  This is the only way of passing in
 more complicated values.
 
-The -o/--opt option can be used to set a key "opt" with key, value
-options in the form "-o key=value" or "-o key". It can be repeated as
+The ` + "`-o`/`--opt`" + ` option can be used to set a key "opt" with key, value
+options in the form ` + "`-o key=value` or `-o key`" + `. It can be repeated as
 many times as required. This is useful for rc commands which take the
 "opt" parameter which by convention is a dictionary of strings.
 
@@ -80,7 +81,7 @@ Will place this in the "opt" value
     {"key":"value", "key2","")
 
 
-The -a/--arg option can be used to set strings in the "arg" value. It
+The ` + "`-a`/`--arg`" + ` option can be used to set strings in the "arg" value. It
 can be repeated as many times as required. This is useful for rc
 commands which take the "arg" parameter which by convention is a list
 of strings.
@@ -91,13 +92,16 @@ Will place this in the "arg" value
 
     ["value", "value2"]
 
-Use --loopback to connect to the rclone instance running "rclone rc".
+Use ` + "`--loopback`" + ` to connect to the rclone instance running ` + "`rclone rc`" + `.
 This is very useful for testing commands without having to run an
 rclone rc server, e.g.:
 
     rclone rc --loopback operations/about fs=/
 
-Use "rclone rc" to see a list of all possible commands.`,
+Use ` + "`rclone rc`" + ` to see a list of all possible commands.`,
+	Annotations: map[string]string{
+		"versionIntroduced": "v1.40",
+	},
 	Run: func(command *cobra.Command, args []string) {
 		cmd.CheckArgs(0, 1e9, command, args)
 		cmd.Run(false, false, command, func() error {
@@ -152,7 +156,26 @@ func ParseOptions(options []string) (opt map[string]string) {
 func setAlternateFlag(flagName string, output *string) {
 	if rcFlag := pflag.Lookup(flagName); rcFlag != nil && rcFlag.Changed {
 		*output = rcFlag.Value.String()
+		if sliceValue, ok := rcFlag.Value.(pflag.SliceValue); ok {
+			stringSlice := sliceValue.GetSlice()
+			for _, value := range stringSlice {
+				if value != "" {
+					*output = value
+					break
+				}
+			}
+		}
 	}
+}
+
+// Format an error and create a synthetic server return from it
+func errorf(status int, path string, format string, arg ...any) (out rc.Params, err error) {
+	err = fmt.Errorf(format, arg...)
+	out = make(rc.Params)
+	out["error"] = err.Error()
+	out["path"] = path
+	out["status"] = status
+	return out, err
 }
 
 // do a call from (path, in) to (out, err).
@@ -163,16 +186,16 @@ func doCall(ctx context.Context, path string, in rc.Params) (out rc.Params, err 
 	if loopback {
 		call := rc.Calls.Get(path)
 		if call == nil {
-			return nil, fmt.Errorf("method %q not found", path)
+			return errorf(http.StatusBadRequest, path, "loopback: method %q not found", path)
 		}
 		_, out, err := jobs.NewJob(ctx, call.Fn, in)
 		if err != nil {
-			return nil, fmt.Errorf("loopback call failed: %w", err)
+			return errorf(http.StatusInternalServerError, path, "loopback: call failed: %w", err)
 		}
 		// Reshape (serialize then deserialize) the data so it is in the form expected
 		err = rc.Reshape(&out, out)
 		if err != nil {
-			return nil, fmt.Errorf("loopback reshape failed: %w", err)
+			return errorf(http.StatusInternalServerError, path, "loopback: reshape failed: %w", err)
 		}
 		return out, nil
 	}
@@ -182,12 +205,12 @@ func doCall(ctx context.Context, path string, in rc.Params) (out rc.Params, err 
 	url += path
 	data, err := json.Marshal(in)
 	if err != nil {
-		return nil, fmt.Errorf("failed to encode JSON: %w", err)
+		return errorf(http.StatusBadRequest, path, "failed to encode request: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(data))
 	if err != nil {
-		return nil, fmt.Errorf("failed to make request: %w", err)
+		return errorf(http.StatusInternalServerError, path, "failed to make request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -197,28 +220,24 @@ func doCall(ctx context.Context, path string, in rc.Params) (out rc.Params, err 
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("connection failed: %w", err)
+		return errorf(http.StatusServiceUnavailable, path, "connection failed: %w", err)
 	}
 	defer fs.CheckClose(resp.Body, &err)
 
-	if resp.StatusCode != http.StatusOK {
-		var body []byte
-		body, err = ioutil.ReadAll(resp.Body)
-		var bodyString string
-		if err == nil {
-			bodyString = string(body)
-		} else {
-			bodyString = err.Error()
-		}
-		bodyString = strings.TrimSpace(bodyString)
-		return nil, fmt.Errorf("Failed to read rc response: %s: %s", resp.Status, bodyString)
+	// Read response
+	var body []byte
+	var bodyString string
+	body, err = io.ReadAll(resp.Body)
+	bodyString = strings.TrimSpace(string(body))
+	if err != nil {
+		return errorf(resp.StatusCode, "failed to read rc response: %s: %s", resp.Status, bodyString)
 	}
 
 	// Parse output
 	out = make(rc.Params)
-	err = json.NewDecoder(resp.Body).Decode(&out)
+	err = json.NewDecoder(strings.NewReader(bodyString)).Decode(&out)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode JSON: %w", err)
+		return errorf(resp.StatusCode, path, "failed to decode response: %w: %s", err, bodyString)
 	}
 
 	// Check we got 200 OK

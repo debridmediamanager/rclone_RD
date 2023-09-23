@@ -1,3 +1,4 @@
+// Package mailru provides an interface to the Mail.ru Cloud storage system.
 package mailru
 
 import (
@@ -17,7 +18,6 @@ import (
 
 	"encoding/hex"
 	"encoding/json"
-	"io/ioutil"
 	"net/http"
 	"net/url"
 
@@ -85,13 +85,19 @@ func init() {
 		Name:        "mailru",
 		Description: "Mail.ru Cloud",
 		NewFs:       NewFs,
-		Options: []fs.Option{{
-			Name:     "user",
-			Help:     "User name (usually email).",
-			Required: true,
+		Options: append(oauthutil.SharedOptions, []fs.Option{{
+			Name:      "user",
+			Help:      "User name (usually email).",
+			Required:  true,
+			Sensitive: true,
 		}, {
-			Name:       "pass",
-			Help:       "Password.",
+			Name: "pass",
+			Help: `Password.
+
+This must be an app password - rclone will not work with your normal
+password. See the Configuration section in the docs for how to make an
+app password.
+`,
 			Required:   true,
 			IsPassword: true,
 		}, {
@@ -208,7 +214,7 @@ Supported quirks: atomicmkdir binlist unknowndirs`,
 				encoder.EncodeWin | // :?"*<>|
 				encoder.EncodeBackSlash |
 				encoder.EncodeInvalidUtf8),
-		}},
+		}}...),
 	})
 }
 
@@ -435,10 +441,10 @@ func (f *Fs) authorize(ctx context.Context, force bool) (err error) {
 		t, err = oauthConfig.PasswordCredentialsToken(ctx, f.opt.Username, f.opt.Password)
 	}
 	if err == nil && !tokenIsValid(t) {
-		err = errors.New("Invalid token")
+		err = errors.New("invalid token")
 	}
 	if err != nil {
-		return fmt.Errorf("Failed to authorize: %w", err)
+		return fmt.Errorf("failed to authorize: %w", err)
 	}
 
 	if err = oauthutil.PutToken(f.name, f.m, t, false); err != nil {
@@ -580,7 +586,7 @@ func readBodyWord(res *http.Response) (word string, err error) {
 		word = strings.Split(line, " ")[0]
 	}
 	if word == "" {
-		return "", errors.New("Empty reply from dispatcher")
+		return "", errors.New("empty reply from dispatcher")
 	}
 	return word, nil
 }
@@ -630,21 +636,17 @@ func (f *Fs) readItemMetaData(ctx context.Context, path string) (entry fs.DirEnt
 
 // itemToEntry converts API item to rclone directory entry
 // The dirSize return value is:
-//   <0 - for a file or in case of error
-//   =0 - for an empty directory
-//   >0 - for a non-empty directory
+//
+//	<0 - for a file or in case of error
+//	=0 - for an empty directory
+//	>0 - for a non-empty directory
 func (f *Fs) itemToDirEntry(ctx context.Context, item *api.ListItem) (entry fs.DirEntry, dirSize int, err error) {
 	remote, err := f.relPath(f.opt.Enc.ToStandardPath(item.Home))
 	if err != nil {
 		return nil, -1, err
 	}
 
-	mTime := int64(item.Mtime)
-	if mTime < 0 {
-		fs.Debugf(f, "Fixing invalid timestamp %d on mailru file %q", mTime, remote)
-		mTime = 0
-	}
-	modTime := time.Unix(mTime, 0)
+	modTime := time.Unix(int64(item.Mtime), 0)
 
 	isDir, err := f.isDir(item.Kind, remote)
 	if err != nil {
@@ -1658,7 +1660,7 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 
 	// Attempt to put by calculating hash in memory
 	if trySpeedup && size <= int64(o.fs.opt.SpeedupMaxMem) {
-		fileBuf, err = ioutil.ReadAll(in)
+		fileBuf, err = io.ReadAll(in)
 		if err != nil {
 			return err
 		}
@@ -1684,7 +1686,7 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 
 			spoolFile, mrHash, err := makeTempFile(ctx, tmpFs, wrapIn, src)
 			if err != nil {
-				return fmt.Errorf("Failed to create spool file: %w", err)
+				return fmt.Errorf("failed to create spool file: %w", err)
 			}
 			if o.putByHash(ctx, mrHash, src, "spool") {
 				// If put by hash is successful, ignore transitive error
@@ -1701,7 +1703,7 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	if size <= mrhash.Size {
 		// Optimize upload: skip extra request if data fits in the hash buffer.
 		if fileBuf == nil {
-			fileBuf, err = ioutil.ReadAll(wrapIn)
+			fileBuf, err = io.ReadAll(wrapIn)
 		}
 		if fileHash == nil && err == nil {
 			fileHash = mrhash.Sum(fileBuf)
@@ -1723,7 +1725,7 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 		return err
 	}
 
-	if bytes.Compare(fileHash, newHash) != 0 {
+	if !bytes.Equal(fileHash, newHash) {
 		if o.fs.opt.CheckHash {
 			return mrhash.ErrorInvalidHash
 		}
@@ -1966,7 +1968,7 @@ func (o *Object) readMetaData(ctx context.Context, force bool) error {
 		return fs.ErrorIsDir
 	}
 	if newObj.remote != o.remote {
-		return fmt.Errorf("File %q path has changed to %q", o.remote, newObj.remote)
+		return fmt.Errorf("file %q path has changed to %q", o.remote, newObj.remote)
 	}
 	o.hasMetaData = true
 	o.size = newObj.size
@@ -2056,7 +2058,7 @@ func (o *Object) addFileMetaData(ctx context.Context, overwrite bool) error {
 	req.WritePu16(0) // revision
 	req.WriteString(o.fs.opt.Enc.FromStandardPath(o.absPath()))
 	req.WritePu64(o.size)
-	req.WritePu64(o.modTime.Unix())
+	req.WriteP64(o.modTime.Unix())
 	req.WritePu32(0)
 	req.Write(o.mrHash)
 
@@ -2212,7 +2214,7 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 		fs.Debugf(o, "Server returned full content instead of range")
 		if start > 0 {
 			// Discard the beginning of the data
-			_, err = io.CopyN(ioutil.Discard, wrapStream, start)
+			_, err = io.CopyN(io.Discard, wrapStream, start)
 			if err != nil {
 				closeBody(res)
 				return nil, err
@@ -2262,7 +2264,7 @@ func (e *endHandler) handle(err error) error {
 	}
 
 	newHash := e.hasher.Sum(nil)
-	if bytes.Compare(o.mrHash, newHash) == 0 {
+	if bytes.Equal(o.mrHash, newHash) {
 		return io.EOF
 	}
 	if o.fs.opt.CheckHash {
@@ -2277,7 +2279,7 @@ type serverPool struct {
 	pool      pendingServerMap
 	mu        sync.Mutex
 	path      string
-	expirySec time.Duration
+	expirySec int
 	fs        *Fs
 }
 
@@ -2318,7 +2320,7 @@ func (p *serverPool) Dispatch(ctx context.Context, current string) (string, erro
 	})
 	if err != nil || url == "" {
 		closeBody(res)
-		return "", fmt.Errorf("Failed to request file server: %w", err)
+		return "", fmt.Errorf("failed to request file server: %w", err)
 	}
 
 	p.addServer(url, now)
@@ -2384,7 +2386,7 @@ func (p *serverPool) addServer(url string, now time.Time) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	expiry := now.Add(p.expirySec * time.Second)
+	expiry := now.Add(time.Duration(p.expirySec) * time.Second)
 
 	expiryStr := []byte("-")
 	if p.fs.ci.LogLevel >= fs.LogLevelInfo {

@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/rclone/rclone/fs"
+	"github.com/rclone/rclone/fs/config"
 	"github.com/rclone/rclone/fs/rc"
+	"github.com/rclone/rclone/lib/diskusage"
 )
 
 func init() {
@@ -34,6 +36,7 @@ func init() {
     - noMimeType - If set don't show mime types
     - dirsOnly - If set only show directories
     - filesOnly - If set only show files
+    - metadata - If set return metadata of objects also
     - hashTypes - array of strings of hash types to show if showHash set
 
 Returns:
@@ -41,7 +44,7 @@ Returns:
 - list
     - This is an array of objects as described in the lsjson command
 
-See the [lsjson command](/commands/rclone_lsjson/) for more information on the above and examples.
+See the [lsjson](/commands/rclone_lsjson/) command for more information on the above and examples.
 `,
 	})
 }
@@ -90,7 +93,7 @@ The result is
 Note that if you are only interested in files then it is much more
 efficient to set the filesOnly flag in the options.
 
-See the [lsjson command](/commands/rclone_lsjson/) for more information on the above and examples.
+See the [lsjson](/commands/rclone_lsjson/) command for more information on the above and examples.
 `,
 	})
 }
@@ -127,7 +130,7 @@ func init() {
 
 The result is as returned from rclone about --json
 
-See the [about command](/commands/rclone_size/) command for more information on the above.
+See the [about](/commands/rclone_about/) command for more information on the above.
 `,
 	})
 }
@@ -169,9 +172,9 @@ func init() {
 			Title: name + " a file from source remote to destination remote",
 			Help: `This takes the following parameters:
 
-- srcFs - a remote name string e.g. "drive:" for the source
+- srcFs - a remote name string e.g. "drive:" for the source, "/" for local filesystem
 - srcRemote - a path within that remote e.g. "file.txt" for the source
-- dstFs - a remote name string e.g. "drive2:" for the destination
+- dstFs - a remote name string e.g. "drive2:" for the destination, "/" for local filesystem
 - dstRemote - a path within that remote e.g. "file2.txt" for the destination
 `,
 		})
@@ -202,12 +205,14 @@ func init() {
 		{name: "mkdir", title: "Make a destination directory or container"},
 		{name: "rmdir", title: "Remove an empty directory or container"},
 		{name: "purge", title: "Remove a directory or container and all of its contents"},
-		{name: "rmdirs", title: "Remove all the empty directories in the path", help: "- leaveRoot - boolean, set to true not to delete the root"},
+		{name: "rmdirs", title: "Remove all the empty directories in the path", help: "- leaveRoot - boolean, set to true not to delete the root\n"},
 		{name: "delete", title: "Remove files in the path", noRemote: true},
 		{name: "deletefile", title: "Remove the single file pointed to"},
-		{name: "copyurl", title: "Copy the URL to the object", help: "- url - string, URL to read from\n - autoFilename - boolean, set to true to retrieve destination file name from url"},
-		{name: "uploadfile", title: "Upload file using multiform/form-data", help: "- each part in body represents a file to be uploaded", needsRequest: true},
+		{name: "copyurl", title: "Copy the URL to the object", help: "- url - string, URL to read from\n - autoFilename - boolean, set to true to retrieve destination file name from url\n"},
+		{name: "uploadfile", title: "Upload file using multiform/form-data", help: "- each part in body represents a file to be uploaded\n", needsRequest: true},
 		{name: "cleanup", title: "Remove trashed files in the remote or path", noRemote: true},
+		{name: "settier", title: "Changes storage tier or class on all files in the path", noRemote: true},
+		{name: "settierfile", title: "Changes storage tier or class on the single file pointed to"},
 	} {
 		op := op
 		remote := "- remote - a path within that remote e.g. \"dir\"\n"
@@ -226,7 +231,7 @@ func init() {
 
 - fs - a remote name string e.g. "drive:"
 ` + remote + op.help + `
-See the [` + op.name + ` command](/commands/rclone_` + op.name + `/) command for more information on the above.
+See the [` + op.name + `](/commands/rclone_` + op.name + `/) command for more information on the above.
 `,
 		})
 	}
@@ -274,8 +279,9 @@ func rcSingleCommand(ctx context.Context, in rc.Params, name string, noRemote bo
 		}
 		autoFilename, _ := in.GetBool("autoFilename")
 		noClobber, _ := in.GetBool("noClobber")
+		headerFilename, _ := in.GetBool("headerFilename")
 
-		_, err = CopyURL(ctx, f, remote, url, autoFilename, noClobber)
+		_, err = CopyURL(ctx, f, remote, url, autoFilename, headerFilename, noClobber)
 		return nil, err
 	case "uploadfile":
 
@@ -303,7 +309,7 @@ func rcSingleCommand(ctx context.Context, in rc.Params, name string, noRemote bo
 					return nil, err
 				}
 				if p.FileName() != "" {
-					obj, err := Rcat(ctx, f, path.Join(remote, p.FileName()), p, time.Now())
+					obj, err := Rcat(ctx, f, path.Join(remote, p.FileName()), p, time.Now(), nil)
 					if err != nil {
 						return nil, err
 					}
@@ -314,6 +320,28 @@ func rcSingleCommand(ctx context.Context, in rc.Params, name string, noRemote bo
 		return nil, nil
 	case "cleanup":
 		return nil, CleanUp(ctx, f)
+	case "settier":
+		if !f.Features().SetTier {
+			return nil, fmt.Errorf("remote %s does not support settier", f.Name())
+		}
+		tier, err := in.GetString("tier")
+		if err != nil {
+			return nil, err
+		}
+		return nil, SetTier(ctx, f, tier)
+	case "settierfile":
+		if !f.Features().SetTier {
+			return nil, fmt.Errorf("remote %s does not support settier", f.Name())
+		}
+		tier, err := in.GetString("tier")
+		if err != nil {
+			return nil, err
+		}
+		o, err := f.NewObject(ctx, remote)
+		if err != nil {
+			return nil, err
+		}
+		return nil, SetTierFile(ctx, o, tier)
 	}
 	panic("unknown rcSingleCommand type")
 }
@@ -333,7 +361,7 @@ Returns:
 - count - number of files
 - bytes - number of bytes in those files
 
-See the [size command](/commands/rclone_size/) command for more information on the above.
+See the [size](/commands/rclone_size/) command for more information on the above.
 `,
 	})
 }
@@ -372,7 +400,7 @@ Returns:
 
 - url - URL of the resource
 
-See the [link command](/commands/rclone_link/) command for more information on the above.
+See the [link](/commands/rclone_link/) command for more information on the above.
 `,
 	})
 }
@@ -412,46 +440,103 @@ This returns info about the remote passed in;
 
 ` + "```" + `
 {
-	// optional features and whether they are available or not
-	"Features": {
-		"About": true,
-		"BucketBased": false,
-		"CanHaveEmptyDirectories": true,
-		"CaseInsensitive": false,
-		"ChangeNotify": false,
-		"CleanUp": false,
-		"Copy": false,
-		"DirCacheFlush": false,
-		"DirMove": true,
-		"DuplicateFiles": false,
-		"GetTier": false,
-		"ListR": false,
-		"MergeDirs": false,
-		"Move": true,
-		"OpenWriterAt": true,
-		"PublicLink": false,
-		"Purge": true,
-		"PutStream": true,
-		"PutUnchecked": false,
-		"ReadMimeType": false,
-		"ServerSideAcrossConfigs": false,
-		"SetTier": false,
-		"SetWrapper": false,
-		"UnWrap": false,
-		"WrapFs": false,
-		"WriteMimeType": false
-	},
-	// Names of hashes available
-	"Hashes": [
-		"MD5",
-		"SHA-1",
-		"DropboxHash",
-		"QuickXorHash"
-	],
-	"Name": "local",	// Name as created
-	"Precision": 1,		// Precision of timestamps in ns
-	"Root": "/",		// Path as created
-	"String": "Local file system at /" // how the remote will appear in logs
+        // optional features and whether they are available or not
+        "Features": {
+                "About": true,
+                "BucketBased": false,
+                "BucketBasedRootOK": false,
+                "CanHaveEmptyDirectories": true,
+                "CaseInsensitive": false,
+                "ChangeNotify": false,
+                "CleanUp": false,
+                "Command": true,
+                "Copy": false,
+                "DirCacheFlush": false,
+                "DirMove": true,
+                "Disconnect": false,
+                "DuplicateFiles": false,
+                "GetTier": false,
+                "IsLocal": true,
+                "ListR": false,
+                "MergeDirs": false,
+                "MetadataInfo": true,
+                "Move": true,
+                "OpenWriterAt": true,
+                "PublicLink": false,
+                "Purge": true,
+                "PutStream": true,
+                "PutUnchecked": false,
+                "ReadMetadata": true,
+                "ReadMimeType": false,
+                "ServerSideAcrossConfigs": false,
+                "SetTier": false,
+                "SetWrapper": false,
+                "Shutdown": false,
+                "SlowHash": true,
+                "SlowModTime": false,
+                "UnWrap": false,
+                "UserInfo": false,
+                "UserMetadata": true,
+                "WrapFs": false,
+                "WriteMetadata": true,
+                "WriteMimeType": false
+        },
+        // Names of hashes available
+        "Hashes": [
+                "md5",
+                "sha1",
+                "whirlpool",
+                "crc32",
+                "sha256",
+                "dropbox",
+                "mailru",
+                "quickxor"
+        ],
+        "Name": "local",        // Name as created
+        "Precision": 1,         // Precision of timestamps in ns
+        "Root": "/",            // Path as created
+        "String": "Local file system at /", // how the remote will appear in logs
+        // Information about the system metadata for this backend
+        "MetadataInfo": {
+                "System": {
+                        "atime": {
+                                "Help": "Time of last access",
+                                "Type": "RFC 3339",
+                                "Example": "2006-01-02T15:04:05.999999999Z07:00"
+                        },
+                        "btime": {
+                                "Help": "Time of file birth (creation)",
+                                "Type": "RFC 3339",
+                                "Example": "2006-01-02T15:04:05.999999999Z07:00"
+                        },
+                        "gid": {
+                                "Help": "Group ID of owner",
+                                "Type": "decimal number",
+                                "Example": "500"
+                        },
+                        "mode": {
+                                "Help": "File type and mode",
+                                "Type": "octal, unix style",
+                                "Example": "0100664"
+                        },
+                        "mtime": {
+                                "Help": "Time of last modification",
+                                "Type": "RFC 3339",
+                                "Example": "2006-01-02T15:04:05.999999999Z07:00"
+                        },
+                        "rdev": {
+                                "Help": "Device ID (if special file)",
+                                "Type": "hexadecimal",
+                                "Example": "1abc"
+                        },
+                        "uid": {
+                                "Help": "User ID of owner",
+                                "Type": "decimal number",
+                                "Example": "500"
+                        }
+                },
+                "Help": "Textual help string\n"
+        }
 }
 ` + "```" + `
 
@@ -559,5 +644,56 @@ func rcBackend(ctx context.Context, in rc.Params) (out rc.Params, err error) {
 	}
 	out = make(rc.Params)
 	out["result"] = result
+	return out, nil
+}
+
+// This should really be in fs/rc/internal.go but can't go there due
+// to a circular dependency on config.
+func init() {
+	rc.Add(rc.Call{
+		Path:  "core/du",
+		Fn:    rcDu,
+		Title: "Returns disk usage of a locally attached disk.",
+		Help: `
+This returns the disk usage for the local directory passed in as dir.
+
+If the directory is not passed in, it defaults to the directory
+pointed to by --cache-dir.
+
+- dir - string (optional)
+
+Returns:
+
+` + "```" + `
+{
+	"dir": "/",
+	"info": {
+		"Available": 361769115648,
+		"Free": 361785892864,
+		"Total": 982141468672
+	}
+}
+` + "```" + `
+`,
+	})
+}
+
+// Terminates app
+func rcDu(ctx context.Context, in rc.Params) (out rc.Params, err error) {
+	dir, err := in.GetString("dir")
+	if rc.IsErrParamNotFound(err) {
+		dir = config.GetCacheDir()
+
+	} else if err != nil {
+		return nil, err
+	}
+	info, err := diskusage.New(dir)
+	if err != nil {
+		return nil, err
+	}
+	out = rc.Params{
+		"dir":  dir,
+		"info": info,
+	}
 	return out, nil
 }

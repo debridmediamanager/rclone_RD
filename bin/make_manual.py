@@ -25,6 +25,7 @@ docs = [
     "flags.md",
     "docker.md",
     "bisync.md",
+    "release_signing.md",
 
     # Keep these alphabetical by full name
     "fichier.md",
@@ -38,6 +39,7 @@ docs = [
     "sharefile.md",
     "crypt.md",
     "compress.md",
+    "combine.md",
     "dropbox.md",
     "filefabric.md",
     "ftp.md",
@@ -46,8 +48,8 @@ docs = [
     "googlephotos.md",
     "hasher.md",
     "hdfs.md",
+    "hidrive.md",
     "http.md",
-    "hubic.md",
     "internetarchive.md",
     "jottacloud.md",
     "koofr.md",
@@ -58,14 +60,20 @@ docs = [
     "azureblob.md",
     "onedrive.md",
     "opendrive.md",
+    "oracleobjectstorage.md",
     "qingstor.md",
+    "quatrix.md",
     "sia.md",
     "swift.md",
     "pcloud.md",
+    "pikpak.md",
     "premiumizeme.md",
+    "protondrive.md",
     "putio.md",
+    "protondrive.md",
     "seafile.md",
     "sftp.md",
+    "smb.md",
     "storj.md",
     "sugarsync.md",
     "tardigrade.md",            # stub only to redirect to storj.md
@@ -110,7 +118,7 @@ commands_order = [
 ignore_docs = [
     "downloads.md",
     "privacy.md",
-    "donate.md",
+    "sponsor.md",
 ]
 
 def read_doc(doc):

@@ -10,7 +10,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"os"
 	"path"
@@ -56,7 +55,8 @@ const (
 
 // logReplacements make modern test logs comparable with golden dir.
 // It is a string slice of even length with this structure:
-//    {`matching regular expression`, "mangled result string", ...}
+//
+//	{`matching regular expression`, "mangled result string", ...}
 var logReplacements = []string{
 	// skip syslog facility markers
 	`^(<[1-9]>)(INFO  |ERROR |NOTICE|DEBUG ):(.*)$`, "$2:$3",
@@ -302,7 +302,7 @@ func (b *bisyncTest) runTestCase(ctx context.Context, t *testing.T, testCase str
 
 	// Execute test scenario
 	scenFile := filepath.Join(b.testDir, "scenario.txt")
-	scenBuf, err := ioutil.ReadFile(scenFile)
+	scenBuf, err := os.ReadFile(scenFile)
 	scenReplacer := b.newReplacer(false)
 	require.NoError(b.t, err)
 	b.step = 0
@@ -614,6 +614,8 @@ func (b *bisyncTest) runBisync(ctx context.Context, args []string) (err error) {
 			opt.DryRun = true
 		case "force":
 			opt.Force = true
+		case "create-empty-src-dirs":
+			opt.CreateEmptySrcDirs = true
 		case "remove-empty-dirs":
 			opt.RemoveEmptyDirs = true
 		case "check-sync-only":
@@ -824,8 +826,9 @@ func touchFiles(ctx context.Context, dateStr string, f fs.Fs, dir, glob string) 
 			err = nil
 			buf := new(bytes.Buffer)
 			size := obj.Size()
+			separator := ""
 			if size > 0 {
-				err = operations.Cat(ctx, f, buf, 0, size)
+				err = operations.Cat(ctx, f, buf, 0, size, []byte(separator))
 			}
 			info := object.NewStaticObjectInfo(remote, date, size, true, nil, f)
 			if err == nil {
@@ -902,8 +905,8 @@ func (b *bisyncTest) compareResults() int {
 			// save mangled logs so difference is easier on eyes
 			goldenFile := filepath.Join(b.logDir, "mangled.golden.log")
 			resultFile := filepath.Join(b.logDir, "mangled.result.log")
-			require.NoError(b.t, ioutil.WriteFile(goldenFile, []byte(goldenText), bilib.PermSecure))
-			require.NoError(b.t, ioutil.WriteFile(resultFile, []byte(resultText), bilib.PermSecure))
+			require.NoError(b.t, os.WriteFile(goldenFile, []byte(goldenText), bilib.PermSecure))
+			require.NoError(b.t, os.WriteFile(resultFile, []byte(resultText), bilib.PermSecure))
 		}
 
 		if goldenText == resultText {
@@ -973,7 +976,7 @@ func (b *bisyncTest) storeGolden() {
 
 		goldName := b.toGolden(fileName)
 		goldPath := filepath.Join(b.goldenDir, goldName)
-		err := ioutil.WriteFile(goldPath, []byte(text), bilib.PermSecure)
+		err := os.WriteFile(goldPath, []byte(text), bilib.PermSecure)
 		assert.NoError(b.t, err, "writing golden file %s", goldName)
 
 		if goldName != fileName {
@@ -985,7 +988,7 @@ func (b *bisyncTest) storeGolden() {
 
 // mangleResult prepares test logs or listings for comparison
 func (b *bisyncTest) mangleResult(dir, file string, golden bool) string {
-	buf, err := ioutil.ReadFile(filepath.Join(dir, file))
+	buf, err := os.ReadFile(filepath.Join(dir, file))
 	require.NoError(b.t, err)
 	text := string(buf)
 
@@ -1162,6 +1165,10 @@ func (b *bisyncTest) newReplacer(mangle bool) *strings.Replacer {
 		b.workDir + slash, "{workdir/}",
 		b.path1, "{path1/}",
 		b.path2, "{path2/}",
+		"//?/" + strings.TrimSuffix(strings.Replace(b.path1, slash, "/", -1), "/"), "{path1}", // fix windows-specific issue
+		"//?/" + strings.TrimSuffix(strings.Replace(b.path2, slash, "/", -1), "/"), "{path2}",
+		strings.TrimSuffix(b.path1, slash), "{path1}", // ensure it's still recognized without trailing slash
+		strings.TrimSuffix(b.path2, slash), "{path2}",
 		b.sessionName, "{session}",
 	}
 	if fixSlash {
@@ -1204,7 +1211,7 @@ func (b *bisyncTest) ensureDir(parent, dir string, optional bool) string {
 }
 
 func (b *bisyncTest) listDir(dir string) (names []string) {
-	files, err := ioutil.ReadDir(dir)
+	files, err := os.ReadDir(dir)
 	require.NoError(b.t, err)
 	for _, file := range files {
 		names = append(names, filepath.Base(file.Name()))

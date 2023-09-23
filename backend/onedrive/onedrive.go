@@ -65,12 +65,12 @@ var (
 	authPath  = "/common/oauth2/v2.0/authorize"
 	tokenPath = "/common/oauth2/v2.0/token"
 
-	scopesWithSitePermission    = []string{"Files.Read", "Files.ReadWrite", "Files.Read.All", "Files.ReadWrite.All", "offline_access", "Sites.Read.All"}
-	scopesWithoutSitePermission = []string{"Files.Read", "Files.ReadWrite", "Files.Read.All", "Files.ReadWrite.All", "offline_access"}
+	scopeAccess             = fs.SpaceSepList{"Files.Read", "Files.ReadWrite", "Files.Read.All", "Files.ReadWrite.All", "Sites.Read.All", "offline_access"}
+	scopeAccessWithoutSites = fs.SpaceSepList{"Files.Read", "Files.ReadWrite", "Files.Read.All", "Files.ReadWrite.All", "offline_access"}
 
 	// Description of how to auth for this app for a business account
 	oauthConfig = &oauth2.Config{
-		Scopes:       scopesWithSitePermission,
+		Scopes:       scopeAccess,
 		ClientID:     rcloneClientID,
 		ClientSecret: obscure.MustReveal(rcloneEncryptedClientSecret),
 		RedirectURL:  oauthutil.RedirectLocalhostURL,
@@ -118,7 +118,7 @@ func init() {
 					Help:  "Microsoft Cloud Germany",
 				}, {
 					Value: regionCN,
-					Help:  "Azure and Office 365 operated by 21Vianet in China",
+					Help:  "Azure and Office 365 operated by Vnet Group in China",
 				},
 			},
 		}, {
@@ -131,10 +131,11 @@ Note that the chunks will be buffered into memory.`,
 			Default:  defaultChunkSize,
 			Advanced: true,
 		}, {
-			Name:     "drive_id",
-			Help:     "The ID of the drive to use.",
-			Default:  "",
-			Advanced: true,
+			Name:      "drive_id",
+			Help:      "The ID of the drive to use.",
+			Default:   "",
+			Advanced:  true,
+			Sensitive: true,
 		}, {
 			Name:     "drive_type",
 			Help:     "The type of the drive (" + driveTypePersonal + " | " + driveTypeBusiness + " | " + driveTypeSharepoint + ").",
@@ -148,8 +149,30 @@ This isn't normally needed, but in special circumstances you might
 know the folder ID that you wish to access but not be able to get
 there through a path traversal.
 `,
-			Advanced: true,
+			Advanced:  true,
+			Sensitive: true,
 		}, {
+			Name: "access_scopes",
+			Help: `Set scopes to be requested by rclone.
+
+Choose or manually enter a custom space separated list with all scopes, that rclone should request.
+`,
+			Default:  scopeAccess,
+			Advanced: true,
+			Examples: []fs.OptionExample{
+				{
+					Value: "Files.Read Files.ReadWrite Files.Read.All Files.ReadWrite.All Sites.Read.All offline_access",
+					Help:  "Read and write access to all resources",
+				},
+				{
+					Value: "Files.Read Files.Read.All Sites.Read.All offline_access",
+					Help:  "Read only access to all resources",
+				},
+				{
+					Value: "Files.Read Files.ReadWrite Files.Read.All Files.ReadWrite.All offline_access",
+					Help:  "Read and write access to all resources, without the ability to browse SharePoint sites. \nSame as if disable_site_permission was set to true",
+				},
+			}}, {
 			Name: "disable_site_permission",
 			Help: `Disable the request for Sites.Read.All permission.
 
@@ -160,6 +183,7 @@ application, and your organization disallows users to consent app permission
 request on their own.`,
 			Default:  false,
 			Advanced: true,
+			Hide:     fs.OptionHideBoth,
 		}, {
 			Name: "expose_onenote_files",
 			Help: `Set to make OneNote files show up in directory listings.
@@ -174,7 +198,9 @@ listing, set this option.`,
 		}, {
 			Name:    "server_side_across_configs",
 			Default: false,
-			Help: `Allow server-side operations (e.g. copy) to work across different onedrive configs.
+			Help: `Deprecated: use --server-side-across-configs instead.
+
+Allow server-side operations (e.g. copy) to work across different onedrive configs.
 
 This will only work if you are copying between two OneDrive *Personal* drives AND
 the files to copy are already shared between them.  In other cases, rclone will
@@ -235,6 +261,67 @@ this flag there.
 			Help: `Set the password for links created by the link command.
 
 At the time of writing this only works with OneDrive personal paid accounts.
+`,
+			Advanced:  true,
+			Sensitive: true,
+		}, {
+			Name:    "hash_type",
+			Default: "auto",
+			Help: `Specify the hash in use for the backend.
+
+This specifies the hash type in use. If set to "auto" it will use the
+default hash which is QuickXorHash.
+
+Before rclone 1.62 an SHA1 hash was used by default for Onedrive
+Personal. For 1.62 and later the default is to use a QuickXorHash for
+all onedrive types. If an SHA1 hash is desired then set this option
+accordingly.
+
+From July 2023 QuickXorHash will be the only available hash for
+both OneDrive for Business and OneDriver Personal.
+
+This can be set to "none" to not use any hashes.
+
+If the hash requested does not exist on the object, it will be
+returned as an empty string which is treated as a missing hash by
+rclone.
+`,
+			Examples: []fs.OptionExample{{
+				Value: "auto",
+				Help:  "Rclone chooses the best hash",
+			}, {
+				Value: "quickxor",
+				Help:  "QuickXor",
+			}, {
+				Value: "sha1",
+				Help:  "SHA1",
+			}, {
+				Value: "sha256",
+				Help:  "SHA256",
+			}, {
+				Value: "crc32",
+				Help:  "CRC32",
+			}, {
+				Value: "none",
+				Help:  "None - don't use any hashes",
+			}},
+			Advanced: true,
+		}, {
+			Name:    "av_override",
+			Default: false,
+			Help: `Allows download of files the server thinks has a virus.
+
+The onedrive/sharepoint server may check files uploaded with an Anti
+Virus checker. If it detects any potential viruses or malware it will
+block download of the file.
+
+In this case you will see a message like this
+
+    server reports this file is infected with a virus - use --onedrive-av-override to download anyway: Infected (name of virus): 403 Forbidden: 
+
+If you are 100% sure you want to download this file anyway then use
+the --onedrive-av-override flag, or av_override = true in the config
+file.
 `,
 			Advanced: true,
 		}, {
@@ -401,11 +488,16 @@ func Config(ctx context.Context, name string, m configmap.Mapper, config fs.Conf
 	region, graphURL := getRegionURL(m)
 
 	if config.State == "" {
+		var accessScopes fs.SpaceSepList
+		accessScopesString, _ := m.Get("access_scopes")
+		err := accessScopes.Set(accessScopesString)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse access_scopes: %w", err)
+		}
+		oauthConfig.Scopes = []string(accessScopes)
 		disableSitePermission, _ := m.Get("disable_site_permission")
 		if disableSitePermission == "true" {
-			oauthConfig.Scopes = scopesWithoutSitePermission
-		} else {
-			oauthConfig.Scopes = scopesWithSitePermission
+			oauthConfig.Scopes = scopeAccessWithoutSites
 		}
 		oauthConfig.Endpoint = oauth2.Endpoint{
 			AuthURL:  authEndpoint[region] + authPath,
@@ -424,7 +516,7 @@ func Config(ctx context.Context, name string, m configmap.Mapper, config fs.Conf
 
 	switch config.State {
 	case "choose_type":
-		return fs.ConfigChooseFixed("choose_type_done", "config_type", "Type of connection", []fs.OptionExample{{
+		return fs.ConfigChooseExclusiveFixed("choose_type_done", "config_type", "Type of connection", []fs.OptionExample{{
 			Value: "onedrive",
 			Help:  "OneDrive Personal or Business",
 		}, {
@@ -480,15 +572,18 @@ func Config(ctx context.Context, name string, m configmap.Mapper, config fs.Conf
 	case "url":
 		return fs.ConfigInput("url_end", "config_site_url", `Site URL
 
-Example: "https://contoso.sharepoint.com/sites/mysite" or "mysite"
+Examples:
+- "mysite"
+- "https://XXX.sharepoint.com/sites/mysite"
+- "https://XXX.sharepoint.com/teams/ID"
 `)
 	case "url_end":
 		siteURL := config.Result
-		re := regexp.MustCompile(`https://.*\.sharepoint.com/sites/(.*)`)
+		re := regexp.MustCompile(`https://.*\.sharepoint\.com(/.*)`)
 		match := re.FindStringSubmatch(siteURL)
 		if len(match) == 2 {
 			return chooseDrive(ctx, name, m, srv, chooseDriveOpt{
-				relativePath: "/sites/" + match[1],
+				relativePath: match[1],
 			})
 		}
 		return chooseDrive(ctx, name, m, srv, chooseDriveOpt{
@@ -562,6 +657,7 @@ type Options struct {
 	DriveType               string               `config:"drive_type"`
 	RootFolderID            string               `config:"root_folder_id"`
 	DisableSitePermission   bool                 `config:"disable_site_permission"`
+	AccessScopes            fs.SpaceSepList      `config:"access_scopes"`
 	ExposeOneNoteFiles      bool                 `config:"expose_onenote_files"`
 	ServerSideAcrossConfigs bool                 `config:"server_side_across_configs"`
 	ListChunk               int64                `config:"list_chunk"`
@@ -569,25 +665,28 @@ type Options struct {
 	LinkScope               string               `config:"link_scope"`
 	LinkType                string               `config:"link_type"`
 	LinkPassword            string               `config:"link_password"`
+	HashType                string               `config:"hash_type"`
+	AVOverride              bool                 `config:"av_override"`
 	Enc                     encoder.MultiEncoder `config:"encoding"`
 }
 
-// Fs represents a remote one drive
+// Fs represents a remote OneDrive
 type Fs struct {
 	name         string             // name of this remote
 	root         string             // the path we are working on
 	opt          Options            // parsed options
 	ci           *fs.ConfigInfo     // global config
 	features     *fs.Features       // optional features
-	srv          *rest.Client       // the connection to the one drive server
+	srv          *rest.Client       // the connection to the OneDrive server
 	dirCache     *dircache.DirCache // Map of directory path to directory id
 	pacer        *fs.Pacer          // pacer for API calls
 	tokenRenewer *oauthutil.Renew   // renew the token on expiry
 	driveID      string             // ID to use for querying Microsoft Graph
 	driveType    string             // https://developer.microsoft.com/en-us/graph/docs/api-reference/v1.0/resources/drive
+	hashType     hash.Type          // type of the hash we are using
 }
 
-// Object describes a one drive object
+// Object describes a OneDrive object
 //
 // Will definitely have info but maybe not meta
 type Object struct {
@@ -598,8 +697,7 @@ type Object struct {
 	size          int64     // size of the object
 	modTime       time.Time // modification time of the object
 	id            string    // ID of the object
-	sha1          string    // SHA-1 of the object content
-	quickxorhash  string    // QuickXorHash of the object content
+	hash          string    // Hash of the content, usually QuickXorHash but set as hash_type
 	mimeType      string    // Content-Type of object from server (may not be as uploaded)
 }
 
@@ -617,7 +715,7 @@ func (f *Fs) Root() string {
 
 // String converts this Fs to a string
 func (f *Fs) String() string {
-	return fmt.Sprintf("One drive root '%s'", f.root)
+	return fmt.Sprintf("OneDrive root '%s'", f.root)
 }
 
 // Features returns the optional features of this Fs
@@ -625,7 +723,7 @@ func (f *Fs) Features() *fs.Features {
 	return f.features
 }
 
-// parsePath parses a one drive 'url'
+// parsePath parses a OneDrive 'url'
 func parsePath(path string) (root string) {
 	root = strings.Trim(path, "/")
 	return
@@ -660,7 +758,7 @@ func shouldRetry(ctx context.Context, resp *http.Response, err error) (bool, err
 				}
 			}
 		case 401:
-			if len(resp.Header["Www-Authenticate"]) == 1 && strings.Index(resp.Header["Www-Authenticate"][0], "expired_token") >= 0 {
+			if len(resp.Header["Www-Authenticate"]) == 1 && strings.Contains(resp.Header["Www-Authenticate"][0], "expired_token") {
 				retry = true
 				fs.Debugf(nil, "Should retry: %v", err)
 			} else if err != nil && strings.Contains(err.Error(), "Unable to initialize RPS") {
@@ -699,7 +797,7 @@ func shouldRetry(ctx context.Context, resp *http.Response, err error) (bool, err
 // "shared with me" folders in OneDrive Personal (See #2536, #2778)
 // This path pattern comes from https://github.com/OneDrive/onedrive-api-docs/issues/908#issuecomment-417488480
 //
-// If `relPath` == '', do not append the slash (See #3664)
+// If `relPath` == ”, do not append the slash (See #3664)
 func (f *Fs) readMetaDataForPathRelativeToID(ctx context.Context, normalizedID string, relPath string) (info *api.Item, resp *http.Response, err error) {
 	opts, _ := f.newOptsCallWithIDPath(normalizedID, relPath, true, "GET", "")
 
@@ -716,8 +814,7 @@ func (f *Fs) readMetaDataForPath(ctx context.Context, path string) (info *api.It
 	firstSlashIndex := strings.IndexRune(path, '/')
 
 	if f.driveType != driveTypePersonal || firstSlashIndex == -1 {
-		var opts rest.Opts
-		opts = f.newOptsCallWithPath(ctx, path, "GET", "")
+		opts := f.newOptsCallWithPath(ctx, path, "GET", "")
 		opts.Path = strings.TrimSuffix(opts.Path, ":")
 		err = f.pacer.Call(func() (bool, error) {
 			resp, err = f.srv.CallJSON(ctx, &opts, nil, &info)
@@ -830,10 +927,9 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 	}
 
 	rootURL := graphAPIEndpoint[opt.Region] + "/v1.0" + "/drives/" + opt.DriveID
+	oauthConfig.Scopes = opt.AccessScopes
 	if opt.DisableSitePermission {
-		oauthConfig.Scopes = scopesWithoutSitePermission
-	} else {
-		oauthConfig.Scopes = scopesWithSitePermission
+		oauthConfig.Scopes = scopeAccessWithoutSites
 	}
 	oauthConfig.Endpoint = oauth2.Endpoint{
 		AuthURL:  authEndpoint[opt.Region] + authPath,
@@ -856,6 +952,7 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		driveType: opt.DriveType,
 		srv:       rest.NewClient(oAuthClient).SetRoot(rootURL),
 		pacer:     fs.NewPacer(ctx, pacer.NewDefault(pacer.MinSleep(minSleep), pacer.MaxSleep(maxSleep), pacer.DecayConstant(decayConstant))),
+		hashType:  QuickXorHashType,
 	}
 	f.features = (&fs.Features{
 		CaseInsensitive:         true,
@@ -864,6 +961,21 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		ServerSideAcrossConfigs: opt.ServerSideAcrossConfigs,
 	}).Fill(ctx, f)
 	f.srv.SetErrorHandler(errorHandler)
+
+	// Set the user defined hash
+	if opt.HashType == "auto" || opt.HashType == "" {
+		opt.HashType = QuickXorHashType.String()
+	}
+	err = f.hashType.Set(opt.HashType)
+	if err != nil {
+		return nil, err
+	}
+
+	// Disable change polling in China region
+	// See: https://github.com/rclone/rclone/issues/6444
+	if f.opt.Region == regionCN {
+		f.features.ChangeNotify = nil
+	}
 
 	// Renew the token in the background
 	f.tokenRenewer = oauthutil.NewRenew(f.String(), ts, func() error {
@@ -1111,7 +1223,7 @@ func (f *Fs) List(ctx context.Context, dir string) (entries fs.DirEntries, err e
 // Creates from the parameters passed in a half finished Object which
 // must have setMetaData called on it
 //
-// Returns the object, leaf, directoryID and error
+// Returns the object, leaf, directoryID and error.
 //
 // Used to create new objects
 func (f *Fs) createObject(ctx context.Context, remote string, modTime time.Time, size int64) (o *Object, leaf string, directoryID string, err error) {
@@ -1130,7 +1242,7 @@ func (f *Fs) createObject(ctx context.Context, remote string, modTime time.Time,
 
 // Put the object into the container
 //
-// Copy the reader in to the new object which is returned
+// Copy the reader in to the new object which is returned.
 //
 // The new object may have been created if an error is returned
 func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
@@ -1254,9 +1366,9 @@ func (f *Fs) waitForJob(ctx context.Context, location string, o *Object) error {
 
 // Copy src to this remote using server-side copy operations.
 //
-// This is stored with the remote path given
+// This is stored with the remote path given.
 //
-// It returns the destination Object and a possible error
+// It returns the destination Object and a possible error.
 //
 // Will only be called if src.Fs().Name() == f.Name()
 //
@@ -1287,7 +1399,7 @@ func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object,
 	if srcObj.fs == f {
 		srcPath := srcObj.rootPath()
 		dstPath := f.rootPath(remote)
-		if strings.ToLower(srcPath) == strings.ToLower(dstPath) {
+		if strings.EqualFold(srcPath, dstPath) {
 			return nil, fmt.Errorf("can't copy %q -> %q as are same name when lowercase", srcPath, dstPath)
 		}
 	}
@@ -1361,9 +1473,9 @@ func (f *Fs) Purge(ctx context.Context, dir string) error {
 
 // Move src to this remote using server-side move operations.
 //
-// This is stored with the remote path given
+// This is stored with the remote path given.
 //
-// It returns the destination Object and a possible error
+// It returns the destination Object and a possible error.
 //
 // Will only be called if src.Fs().Name() == f.Name()
 //
@@ -1524,10 +1636,7 @@ func (f *Fs) About(ctx context.Context) (usage *fs.Usage, err error) {
 
 // Hashes returns the supported hash sets.
 func (f *Fs) Hashes() hash.Set {
-	if f.driveType == driveTypePersonal {
-		return hash.Set(hash.SHA1)
-	}
-	return hash.Set(QuickXorHashType)
+	return hash.Set(f.hashType)
 }
 
 // PublicLink returns a link for downloading without account.
@@ -1642,6 +1751,10 @@ func (f *Fs) CleanUp(ctx context.Context) error {
 	token := make(chan struct{}, f.ci.Checkers)
 	var wg sync.WaitGroup
 	err := walk.Walk(ctx, f, "", true, -1, func(path string, entries fs.DirEntries, err error) error {
+		if err != nil {
+			fs.Errorf(f, "Failed to list %q: %v", path, err)
+			return nil
+		}
 		err = entries.ForObjectError(func(obj fs.Object) error {
 			o, ok := obj.(*Object)
 			if !ok {
@@ -1734,26 +1847,10 @@ func (o *Object) rootPath() string {
 	return o.fs.rootPath(o.remote)
 }
 
-// srvPath returns a path for use in server given a remote
-func (f *Fs) srvPath(remote string) string {
-	return f.opt.Enc.FromStandardPath(f.rootSlash() + remote)
-}
-
-// srvPath returns a path for use in server
-func (o *Object) srvPath() string {
-	return o.fs.srvPath(o.remote)
-}
-
 // Hash returns the SHA-1 of an object returning a lowercase hex string
 func (o *Object) Hash(ctx context.Context, t hash.Type) (string, error) {
-	if o.fs.driveType == driveTypePersonal {
-		if t == hash.SHA1 {
-			return o.sha1, nil
-		}
-	} else {
-		if t == QuickXorHashType {
-			return o.quickxorhash, nil
-		}
+	if t == o.fs.hashType {
+		return o.hash, nil
 	}
 	return "", hash.ErrUnsupported
 }
@@ -1784,16 +1881,23 @@ func (o *Object) setMetaData(info *api.Item) (err error) {
 	file := info.GetFile()
 	if file != nil {
 		o.mimeType = file.MimeType
-		if file.Hashes.Sha1Hash != "" {
-			o.sha1 = strings.ToLower(file.Hashes.Sha1Hash)
-		}
-		if file.Hashes.QuickXorHash != "" {
-			h, err := base64.StdEncoding.DecodeString(file.Hashes.QuickXorHash)
-			if err != nil {
-				fs.Errorf(o, "Failed to decode QuickXorHash %q: %v", file.Hashes.QuickXorHash, err)
-			} else {
-				o.quickxorhash = hex.EncodeToString(h)
+		o.hash = ""
+		switch o.fs.hashType {
+		case QuickXorHashType:
+			if file.Hashes.QuickXorHash != "" {
+				h, err := base64.StdEncoding.DecodeString(file.Hashes.QuickXorHash)
+				if err != nil {
+					fs.Errorf(o, "Failed to decode QuickXorHash %q: %v", file.Hashes.QuickXorHash, err)
+				} else {
+					o.hash = hex.EncodeToString(h)
+				}
 			}
+		case hash.SHA1:
+			o.hash = strings.ToLower(file.Hashes.Sha1Hash)
+		case hash.SHA256:
+			o.hash = strings.ToLower(file.Hashes.Sha256Hash)
+		case hash.CRC32:
+			o.hash = strings.ToLower(file.Hashes.Crc32Hash)
 		}
 	}
 	fileSystemInfo := info.GetFileSystemInfo()
@@ -1826,7 +1930,6 @@ func (o *Object) readMetaData(ctx context.Context) (err error) {
 }
 
 // ModTime returns the modification time of the object
-//
 //
 // It attempts to read the objects mtime and if that isn't present the
 // LastModified returned in the http headers
@@ -1890,12 +1993,20 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 	var resp *http.Response
 	opts := o.fs.newOptsCall(o.id, "GET", "/content")
 	opts.Options = options
+	if o.fs.opt.AVOverride {
+		opts.Parameters = url.Values{"AVOverride": {"1"}}
+	}
 
 	err = o.fs.pacer.Call(func() (bool, error) {
 		resp, err = o.fs.srv.Call(ctx, &opts)
 		return shouldRetry(ctx, resp, err)
 	})
 	if err != nil {
+		if resp != nil {
+			if virus := resp.Header.Get("X-Virus-Infected"); virus != "" {
+				err = fmt.Errorf("server reports this file is infected with a virus - use --onedrive-av-override to download anyway: %s: %w", virus, err)
+			}
+		}
 		return nil, err
 	}
 
@@ -2168,7 +2279,7 @@ func (o *Object) ID() string {
  *       3. To avoid region-related issues, please don't manually build rest.Opts from scratch.
  *          Instead, use these helper function, and customize the URL afterwards if needed.
  *
- *       currently, the 21ViaNet's API differs in the following places:
+ *       currently, the Vnet Group's API differs in the following places:
  *       - https://{Endpoint}/drives/{driveID}/items/{leaf}:/{route}
  *           - this API doesn't work (gives invalid request)
  *           - can be replaced with the following API:
@@ -2185,7 +2296,7 @@ func (o *Object) ID() string {
 // Such a normalized ID can come from (*Item).GetID()
 func (f *Fs) parseNormalizedID(ID string) (string, string, string) {
 	rootURL := graphAPIEndpoint[f.opt.Region] + "/v1.0/drives"
-	if strings.Index(ID, "#") >= 0 {
+	if strings.Contains(ID, "#") {
 		s := strings.Split(ID, "#")
 		return s[1], s[0], rootURL
 	}
@@ -2217,7 +2328,7 @@ func escapeSingleQuote(str string) string {
 // newOptsCallWithIDPath build the rest.Opts structure with *a normalizedID (driveID#fileID, or simply fileID) and leaf*
 // using url template https://{Endpoint}/drives/{driveID}/items/{leaf}:/{route} (for international OneDrive)
 // or https://{Endpoint}/drives/{driveID}/items/children('{leaf}')/{route}
-// and https://{Endpoint}/drives/{driveID}/items/children('@a1')/{route}?@a1=URLEncode("'{leaf}'") (for 21ViaNet)
+// and https://{Endpoint}/drives/{driveID}/items/children('@a1')/{route}?@a1=URLEncode("'{leaf}'") (for Vnet Group)
 // if isPath is false, this function will only work when the leaf is "" or a child name (i.e. it doesn't accept multi-level leaf)
 // if isPath is true, multi-level leaf like a/b/c can be passed
 func (f *Fs) newOptsCallWithIDPath(normalizedID string, leaf string, isPath bool, method string, route string) (opts rest.Opts, ok bool) {
@@ -2359,6 +2470,9 @@ func (f *Fs) ChangeNotify(ctx context.Context, notifyFunc func(string, fs.EntryT
 
 func (f *Fs) changeNotifyStartPageToken(ctx context.Context) (nextDeltaToken string, err error) {
 	delta, err := f.changeNotifyNextChange(ctx, "latest")
+	if err != nil {
+		return
+	}
 	parsedURL, err := url.Parse(delta.DeltaLink)
 	if err != nil {
 		return
@@ -2388,6 +2502,9 @@ func (f *Fs) buildDriveDeltaOpts(token string) rest.Opts {
 
 func (f *Fs) changeNotifyRunner(ctx context.Context, notifyFunc func(string, fs.EntryType), deltaToken string) (nextDeltaToken string, err error) {
 	delta, err := f.changeNotifyNextChange(ctx, deltaToken)
+	if err != nil {
+		return
+	}
 	parsedURL, err := url.Parse(delta.DeltaLink)
 	if err != nil {
 		return

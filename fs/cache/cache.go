@@ -25,6 +25,11 @@ func createOnFirstUse() {
 		c = cache.New()
 		c.SetExpireDuration(ci.FsCacheExpireDuration)
 		c.SetExpireInterval(ci.FsCacheExpireInterval)
+		c.SetFinalizer(func(value interface{}) {
+			if s, ok := value.(fs.Shutdowner); ok {
+				_ = fs.CountError(s.Shutdown(context.Background()))
+			}
+		})
 	})
 }
 
@@ -112,8 +117,16 @@ func PinUntilFinalized(f fs.Fs, x interface{}) {
 // Unpin f from the cache
 func Unpin(f fs.Fs) {
 	createOnFirstUse()
-	c.Pin(fs.ConfigString(f))
+	c.Unpin(fs.ConfigString(f))
 }
+
+// To avoid circular dependencies these are filled in by fs/rc/jobs/job.go
+var (
+	// JobGetJobID for internal use only
+	JobGetJobID func(context.Context) (int64, bool)
+	// JobOnFinish for internal use only
+	JobOnFinish func(int64, func()) (func(), error)
+)
 
 // Get gets an fs.Fs named fsString either from the cache or creates it afresh
 func Get(ctx context.Context, fsString string) (f fs.Fs, err error) {
@@ -124,7 +137,22 @@ func Get(ctx context.Context, fsString string) (f fs.Fs, err error) {
 	newCtx := context.Background()
 	newCtx = fs.CopyConfig(newCtx, ctx)
 	newCtx = filter.CopyConfig(newCtx, ctx)
-	return GetFn(newCtx, fsString, fs.NewFs)
+	f, err = GetFn(newCtx, fsString, fs.NewFs)
+	if f == nil || (err != nil && err != fs.ErrorIsFile) {
+		return f, err
+	}
+	// If this is part of an rc job then pin the backend until it finishes
+	if JobOnFinish != nil && JobGetJobID != nil {
+		if jobID, ok := JobGetJobID(ctx); ok {
+			// fs.Debugf(f, "Pin for job %d", jobID)
+			Pin(f)
+			_, _ = JobOnFinish(jobID, func() {
+				// fs.Debugf(f, "Unpin for job %d", jobID)
+				Unpin(f)
+			})
+		}
+	}
+	return f, err
 }
 
 // GetArr gets []fs.Fs from []fsStrings either from the cache or creates it afresh

@@ -19,8 +19,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
+	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -44,6 +44,7 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/googleapi"
+	option "google.golang.org/api/option"
 
 	// NOTE: This API is deprecated
 	storage "google.golang.org/api/storage/v1"
@@ -81,7 +82,8 @@ func init() {
 			saFile, _ := m.Get("service_account_file")
 			saCreds, _ := m.Get("service_account_credentials")
 			anonymous, _ := m.Get("anonymous")
-			if saFile != "" || saCreds != "" || anonymous == "true" {
+			envAuth, _ := m.Get("env_auth")
+			if saFile != "" || saCreds != "" || anonymous == "true" || envAuth == "true" {
 				return nil, nil
 			}
 			return oauthutil.ConfigOut("", &oauthutil.Options{
@@ -89,15 +91,21 @@ func init() {
 			})
 		},
 		Options: append(oauthutil.SharedOptions, []fs.Option{{
-			Name: "project_number",
-			Help: "Project number.\n\nOptional - needed only for list/create/delete buckets - see your developer console.",
+			Name:      "project_number",
+			Help:      "Project number.\n\nOptional - needed only for list/create/delete buckets - see your developer console.",
+			Sensitive: true,
+		}, {
+			Name:      "user_project",
+			Help:      "User project.\n\nOptional - needed only for requester pays.",
+			Sensitive: true,
 		}, {
 			Name: "service_account_file",
 			Help: "Service Account Credentials JSON file path.\n\nLeave blank normally.\nNeeded only if you want use SA instead of interactive login." + env.ShellExpandHelp,
 		}, {
-			Name: "service_account_credentials",
-			Help: "Service Account Credentials JSON blob.\n\nLeave blank normally.\nNeeded only if you want use SA instead of interactive login.",
-			Hide: fs.OptionHideBoth,
+			Name:      "service_account_credentials",
+			Help:      "Service Account Credentials JSON blob.\n\nLeave blank normally.\nNeeded only if you want use SA instead of interactive login.",
+			Hide:      fs.OptionHideBoth,
+			Sensitive: true,
 		}, {
 			Name:    "anonymous",
 			Help:    "Access public buckets and objects without credentials.\n\nSet to 'true' if you just want to download files and don't configure credentials.",
@@ -297,6 +305,15 @@ Docs: https://cloud.google.com/storage/docs/bucket-policy-only
 				Help:  "Durable reduced availability storage class",
 			}},
 		}, {
+			Name:     "directory_markers",
+			Default:  false,
+			Advanced: true,
+			Help: `Upload an empty object with a trailing slash when a new directory is created
+
+Empty folders are unsupported for bucket based remotes, this option creates an empty
+object ending with "/", to persist the folder.
+`,
+		}, {
 			Name: "no_check_bucket",
 			Help: `If set, don't attempt to check the bucket exists or create it.
 
@@ -306,20 +323,22 @@ rclone does if you know the bucket exists already.
 			Default:  false,
 			Advanced: true,
 		}, {
-			Name: "download_compressed",
-			Help: `If set this will download compressed objects as-is.
+			Name: "decompress",
+			Help: `If set this will decompress gzip encoded objects.
 
 It is possible to upload objects to GCS with "Content-Encoding: gzip"
-set. Normally rclone will transparently decompress these files on
-download. This means that rclone can't check the hash or the size of
-the file as both of these refer to the compressed object.
+set. Normally rclone will download these files as compressed objects.
 
-If this flag is set then rclone will download files with
+If this flag is set then rclone will decompress these files with
 "Content-Encoding: gzip" as they are received. This means that rclone
-can check the size and hash but the file contents will be compressed.
+can't check the size and hash but the file contents will be decompressed.
 `,
 			Advanced: true,
 			Default:  false,
+		}, {
+			Name:     "endpoint",
+			Help:     "Endpoint for the service.\n\nLeave blank normally.",
+			Advanced: true,
 		}, {
 			Name:     config.ConfigEncoding,
 			Help:     config.ConfigEncodingHelp,
@@ -327,6 +346,17 @@ can check the size and hash but the file contents will be compressed.
 			Default: (encoder.Base |
 				encoder.EncodeCrLf |
 				encoder.EncodeInvalidUtf8),
+		}, {
+			Name:    "env_auth",
+			Help:    "Get GCP IAM credentials from runtime (environment variables or instance meta data if no env vars).\n\nOnly applies if service_account_file and service_account_credentials is blank.",
+			Default: false,
+			Examples: []fs.OptionExample{{
+				Value: "false",
+				Help:  "Enter credentials in the next step.",
+			}, {
+				Value: "true",
+				Help:  "Get GCP IAM credentials from the environment (env vars or IAM).",
+			}},
 		}}...),
 	})
 }
@@ -334,6 +364,7 @@ can check the size and hash but the file contents will be compressed.
 // Options defines the configuration for this backend
 type Options struct {
 	ProjectNumber             string               `config:"project_number"`
+	UserProject               string               `config:"user_project"`
 	ServiceAccountFile        string               `config:"service_account_file"`
 	ServiceAccountCredentials string               `config:"service_account_credentials"`
 	Anonymous                 bool                 `config:"anonymous"`
@@ -343,8 +374,11 @@ type Options struct {
 	Location                  string               `config:"location"`
 	StorageClass              string               `config:"storage_class"`
 	NoCheckBucket             bool                 `config:"no_check_bucket"`
-	DownloadCompressed        bool                 `config:"download_compressed"`
+	Decompress                bool                 `config:"decompress"`
+	Endpoint                  string               `config:"endpoint"`
 	Enc                       encoder.MultiEncoder `config:"encoding"`
+	EnvAuth                   bool                 `config:"env_auth"`
+	DirectoryMarkers          bool                 `config:"directory_markers"`
 }
 
 // Fs represents a remote storage server
@@ -391,7 +425,7 @@ func (f *Fs) Root() string {
 // String converts this Fs to a string
 func (f *Fs) String() string {
 	if f.rootBucket == "" {
-		return fmt.Sprintf("GCS root")
+		return "GCS root"
 	}
 	if f.rootDirectory == "" {
 		return fmt.Sprintf("GCS bucket %s", f.rootBucket)
@@ -440,7 +474,7 @@ func parsePath(path string) (root string) {
 // split returns bucket and bucketPath from the rootRelativePath
 // relative to f.root
 func (f *Fs) split(rootRelativePath string) (bucketName, bucketPath string) {
-	bucketName, bucketPath = bucket.Split(path.Join(f.root, rootRelativePath))
+	bucketName, bucketPath = bucket.Split(bucket.Join(f.root, rootRelativePath))
 	return f.opt.Enc.FromStandardName(bucketName), f.opt.Enc.FromStandardPath(bucketPath)
 }
 
@@ -483,7 +517,7 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 
 	// try loading service account credentials from env variable, then from a file
 	if opt.ServiceAccountCredentials == "" && opt.ServiceAccountFile != "" {
-		loadedCreds, err := ioutil.ReadFile(env.ShellExpand(opt.ServiceAccountFile))
+		loadedCreds, err := os.ReadFile(env.ShellExpand(opt.ServiceAccountFile))
 		if err != nil {
 			return nil, fmt.Errorf("error opening service account credentials file: %w", err)
 		}
@@ -495,6 +529,11 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		oAuthClient, err = getServiceAccountClient(ctx, []byte(opt.ServiceAccountCredentials))
 		if err != nil {
 			return nil, fmt.Errorf("failed configuring Google Cloud Storage Service Account: %w", err)
+		}
+	} else if opt.EnvAuth {
+		oAuthClient, err = google.DefaultClient(ctx, storage.DevstorageFullControlScope)
+		if err != nil {
+			return nil, fmt.Errorf("failed to configure Google Cloud Storage: %w", err)
 		}
 	} else {
 		oAuthClient, _, err = oauthutil.NewClient(ctx, name, m, storageConfig)
@@ -521,10 +560,17 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		BucketBased:       true,
 		BucketBasedRootOK: true,
 	}).Fill(ctx, f)
+	if opt.DirectoryMarkers {
+		f.features.CanHaveEmptyDirectories = true
+	}
 
 	// Create a new authorized Drive client.
 	f.client = oAuthClient
-	f.svc, err = storage.New(f.client)
+	gcsOpts := []option.ClientOption{option.WithHTTPClient(f.client)}
+	if opt.Endpoint != "" {
+		gcsOpts = append(gcsOpts, option.WithEndpoint(opt.Endpoint))
+	}
+	f.svc, err = storage.NewService(context.Background(), gcsOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't create Google Cloud Storage client: %w", err)
 	}
@@ -533,7 +579,11 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 		// Check to see if the object exists
 		encodedDirectory := f.opt.Enc.FromStandardPath(f.rootDirectory)
 		err = f.pacer.Call(func() (bool, error) {
-			_, err = f.svc.Objects.Get(f.rootBucket, encodedDirectory).Context(ctx).Do()
+			get := f.svc.Objects.Get(f.rootBucket, encodedDirectory).Context(ctx)
+			if f.opt.UserProject != "" {
+				get = get.UserProject(f.opt.UserProject)
+			}
+			_, err = get.Do()
 			return shouldRetry(ctx, err)
 		})
 		if err == nil {
@@ -581,7 +631,7 @@ type listFn func(remote string, object *storage.Object, isDirectory bool) error
 //
 // dir is the starting directory, "" for root
 //
-// Set recurse to read sub directories
+// Set recurse to read sub directories.
 //
 // The remote has prefix removed from it and if addBucket is set
 // then it adds the bucket to the start.
@@ -593,9 +643,13 @@ func (f *Fs) list(ctx context.Context, bucket, directory, prefix string, addBuck
 		directory += "/"
 	}
 	list := f.svc.Objects.List(bucket).Prefix(directory).MaxResults(listChunks)
+	if f.opt.UserProject != "" {
+		list = list.UserProject(f.opt.UserProject)
+	}
 	if !recurse {
 		list = list.Delimiter("/")
 	}
+	foundItems := 0
 	for {
 		var objects *storage.Objects
 		err = f.pacer.Call(func() (bool, error) {
@@ -611,6 +665,7 @@ func (f *Fs) list(ctx context.Context, bucket, directory, prefix string, addBuck
 			return err
 		}
 		if !recurse {
+			foundItems += len(objects.Prefixes)
 			var object storage.Object
 			for _, remote := range objects.Prefixes {
 				if !strings.HasSuffix(remote, "/") {
@@ -631,22 +686,29 @@ func (f *Fs) list(ctx context.Context, bucket, directory, prefix string, addBuck
 				}
 			}
 		}
+		foundItems += len(objects.Items)
 		for _, object := range objects.Items {
 			remote := f.opt.Enc.ToStandardPath(object.Name)
 			if !strings.HasPrefix(remote, prefix) {
 				fs.Logf(f, "Odd name received %q", object.Name)
 				continue
 			}
-			remote = remote[len(prefix):]
 			isDirectory := remote == "" || strings.HasSuffix(remote, "/")
+			// is this a directory marker?
+			if isDirectory {
+				// Don't insert the root directory
+				if remote == directory {
+					continue
+				}
+				// process directory markers as directories
+				remote = strings.TrimRight(remote, "/")
+			}
+			remote = remote[len(prefix):]
 			if addBucket {
 				remote = path.Join(bucket, remote)
 			}
-			// is this a directory marker?
-			if isDirectory {
-				continue // skip directory marker
-			}
-			err = fn(remote, object, false)
+
+			err = fn(remote, object, isDirectory)
 			if err != nil {
 				return err
 			}
@@ -656,6 +718,17 @@ func (f *Fs) list(ctx context.Context, bucket, directory, prefix string, addBuck
 		}
 		list.PageToken(objects.NextPageToken)
 	}
+	if f.opt.DirectoryMarkers && foundItems == 0 && directory != "" {
+		// Determine whether the directory exists or not by whether it has a marker
+		_, err := f.readObjectInfo(ctx, bucket, directory)
+		if err != nil {
+			if err == fs.ErrorObjectNotFound {
+				return fs.ErrorDirNotFound
+			}
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -699,6 +772,9 @@ func (f *Fs) listBuckets(ctx context.Context) (entries fs.DirEntries, err error)
 		return nil, errors.New("can't list buckets without project number")
 	}
 	listBuckets := f.svc.Buckets.List(f.opt.ProjectNumber).MaxResults(listChunks)
+	if f.opt.UserProject != "" {
+		listBuckets = listBuckets.UserProject(f.opt.UserProject)
+	}
 	for {
 		var buckets *storage.Buckets
 		err = f.pacer.Call(func() (bool, error) {
@@ -799,7 +875,7 @@ func (f *Fs) ListR(ctx context.Context, dir string, callback fs.ListRCallback) (
 
 // Put the object into the bucket
 //
-// Copy the reader in to the new object which is returned
+// Copy the reader in to the new object which is returned.
 //
 // The new object may have been created if an error is returned
 func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
@@ -816,10 +892,69 @@ func (f *Fs) PutStream(ctx context.Context, in io.Reader, src fs.ObjectInfo, opt
 	return f.Put(ctx, in, src, options...)
 }
 
+// Create directory marker file and parents
+func (f *Fs) createDirectoryMarker(ctx context.Context, bucket, dir string) error {
+	if !f.opt.DirectoryMarkers || bucket == "" {
+		return nil
+	}
+
+	// Object to be uploaded
+	o := &Object{
+		fs:      f,
+		modTime: time.Now(),
+	}
+
+	for {
+		_, bucketPath := f.split(dir)
+		// Don't create the directory marker if it is the bucket or at the very root
+		if bucketPath == "" {
+			break
+		}
+		o.remote = dir + "/"
+
+		// Check to see if object already exists
+		_, err := o.readObjectInfo(ctx)
+		if err == nil {
+			return nil
+		}
+
+		// Upload it if not
+		fs.Debugf(o, "Creating directory marker")
+		content := io.Reader(strings.NewReader(""))
+		err = o.Update(ctx, content, o)
+		if err != nil {
+			return fmt.Errorf("creating directory marker failed: %w", err)
+		}
+
+		// Now check parent directory exists
+		dir = path.Dir(dir)
+		if dir == "/" || dir == "." {
+			break
+		}
+	}
+
+	return nil
+}
+
 // Mkdir creates the bucket if it doesn't exist
 func (f *Fs) Mkdir(ctx context.Context, dir string) (err error) {
 	bucket, _ := f.split(dir)
-	return f.makeBucket(ctx, bucket)
+	e := f.checkBucket(ctx, bucket)
+	if e != nil {
+		return e
+	}
+	return f.createDirectoryMarker(ctx, bucket, dir)
+
+}
+
+// mkdirParent creates the parent bucket/directory if it doesn't exist
+func (f *Fs) mkdirParent(ctx context.Context, remote string) error {
+	remote = strings.TrimRight(remote, "/")
+	dir := path.Dir(remote)
+	if dir == "/" || dir == "." {
+		dir = ""
+	}
+	return f.Mkdir(ctx, dir)
 }
 
 // makeBucket creates the bucket if it doesn't exist
@@ -828,7 +963,11 @@ func (f *Fs) makeBucket(ctx context.Context, bucket string) (err error) {
 		// List something from the bucket to see if it exists.  Doing it like this enables the use of a
 		// service account that only has the "Storage Object Admin" role.  See #2193 for details.
 		err = f.pacer.Call(func() (bool, error) {
-			_, err = f.svc.Objects.List(bucket).MaxResults(1).Context(ctx).Do()
+			list := f.svc.Objects.List(bucket).MaxResults(1).Context(ctx)
+			if f.opt.UserProject != "" {
+				list = list.UserProject(f.opt.UserProject)
+			}
+			_, err = list.Do()
 			return shouldRetry(ctx, err)
 		})
 		if err == nil {
@@ -863,7 +1002,11 @@ func (f *Fs) makeBucket(ctx context.Context, bucket string) (err error) {
 			if !f.opt.BucketPolicyOnly {
 				insertBucket.PredefinedAcl(f.opt.BucketACL)
 			}
-			_, err = insertBucket.Context(ctx).Do()
+			insertBucket = insertBucket.Context(ctx)
+			if f.opt.UserProject != "" {
+				insertBucket = insertBucket.UserProject(f.opt.UserProject)
+			}
+			_, err = insertBucket.Do()
 			return shouldRetry(ctx, err)
 		})
 	}, nil)
@@ -883,12 +1026,28 @@ func (f *Fs) checkBucket(ctx context.Context, bucket string) error {
 // to delete was not empty.
 func (f *Fs) Rmdir(ctx context.Context, dir string) (err error) {
 	bucket, directory := f.split(dir)
+	// Remove directory marker file
+	if f.opt.DirectoryMarkers && bucket != "" && dir != "" {
+		o := &Object{
+			fs:     f,
+			remote: dir + "/",
+		}
+		fs.Debugf(o, "Removing directory marker")
+		err := o.Remove(ctx)
+		if err != nil {
+			return fmt.Errorf("removing directory marker failed: %w", err)
+		}
+	}
 	if bucket == "" || directory != "" {
 		return nil
 	}
 	return f.cache.Remove(bucket, func() error {
 		return f.pacer.Call(func() (bool, error) {
-			err = f.svc.Buckets.Delete(bucket).Context(ctx).Do()
+			deleteBucket := f.svc.Buckets.Delete(bucket).Context(ctx)
+			if f.opt.UserProject != "" {
+				deleteBucket = deleteBucket.UserProject(f.opt.UserProject)
+			}
+			err = deleteBucket.Do()
 			return shouldRetry(ctx, err)
 		})
 	})
@@ -901,16 +1060,16 @@ func (f *Fs) Precision() time.Duration {
 
 // Copy src to this remote using server-side copy operations.
 //
-// This is stored with the remote path given
+// This is stored with the remote path given.
 //
-// It returns the destination Object and a possible error
+// It returns the destination Object and a possible error.
 //
 // Will only be called if src.Fs().Name() == f.Name()
 //
 // If it isn't possible then return fs.ErrorCantCopy
 func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object, error) {
 	dstBucket, dstPath := f.split(remote)
-	err := f.checkBucket(ctx, dstBucket)
+	err := f.mkdirParent(ctx, remote)
 	if err != nil {
 		return nil, err
 	}
@@ -934,7 +1093,11 @@ func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object,
 	var rewriteResponse *storage.RewriteResponse
 	for {
 		err = f.pacer.Call(func() (bool, error) {
-			rewriteResponse, err = rewriteRequest.Context(ctx).Do()
+			rewriteRequest = rewriteRequest.Context(ctx)
+			if f.opt.UserProject != "" {
+				rewriteRequest.UserProject(f.opt.UserProject)
+			}
+			rewriteResponse, err = rewriteRequest.Do()
 			return shouldRetry(ctx, err)
 		})
 		if err != nil {
@@ -1035,20 +1198,26 @@ func (o *Object) setMetaData(info *storage.Object) {
 	}
 
 	// If gunzipping then size and md5sum are unknown
-	if o.gzipped && !o.fs.opt.DownloadCompressed {
+	if o.gzipped && o.fs.opt.Decompress {
 		o.bytes = -1
 		o.md5sum = ""
-		o.fs.warnCompressed.Do(func() {
-			fs.Logf(o.fs, "Decompressing 'Content-Encoding: gzip' compressed file. Use --gcs-download-compressed to override")
-		})
 	}
 }
 
 // readObjectInfo reads the definition for an object
 func (o *Object) readObjectInfo(ctx context.Context) (object *storage.Object, err error) {
 	bucket, bucketPath := o.split()
-	err = o.fs.pacer.Call(func() (bool, error) {
-		object, err = o.fs.svc.Objects.Get(bucket, bucketPath).Context(ctx).Do()
+	return o.fs.readObjectInfo(ctx, bucket, bucketPath)
+}
+
+// readObjectInfo reads the definition for an object
+func (f *Fs) readObjectInfo(ctx context.Context, bucket, bucketPath string) (object *storage.Object, err error) {
+	err = f.pacer.Call(func() (bool, error) {
+		get := f.svc.Objects.Get(bucket, bucketPath).Context(ctx)
+		if f.opt.UserProject != "" {
+			get = get.UserProject(f.opt.UserProject)
+		}
+		object, err = get.Do()
 		return shouldRetry(ctx, err)
 	})
 	if err != nil {
@@ -1120,7 +1289,11 @@ func (o *Object) SetModTime(ctx context.Context, modTime time.Time) (err error) 
 		if !o.fs.opt.BucketPolicyOnly {
 			copyObject.DestinationPredefinedAcl(o.fs.opt.ObjectACL)
 		}
-		newObject, err = copyObject.Context(ctx).Do()
+		copyObject = copyObject.Context(ctx)
+		if o.fs.opt.UserProject != "" {
+			copyObject = copyObject.UserProject(o.fs.opt.UserProject)
+		}
+		newObject, err = copyObject.Do()
 		return shouldRetry(ctx, err)
 	})
 	if err != nil {
@@ -1137,12 +1310,15 @@ func (o *Object) Storable() bool {
 
 // Open an object for read
 func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.ReadCloser, err error) {
+	if o.fs.opt.UserProject != "" {
+		o.url = o.url + "&userProject=" + o.fs.opt.UserProject
+	}
 	req, err := http.NewRequestWithContext(ctx, "GET", o.url, nil)
 	if err != nil {
 		return nil, err
 	}
 	fs.FixRangeOption(options, o.bytes)
-	if o.gzipped && o.fs.opt.DownloadCompressed {
+	if o.gzipped && !o.fs.opt.Decompress {
 		// Allow files which are stored on the cloud storage system
 		// compressed to be downloaded without being decompressed.  Note
 		// that setting this here overrides the automatic decompression
@@ -1150,6 +1326,9 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 		//
 		// See: https://cloud.google.com/storage/docs/transcoding
 		req.Header.Set("Accept-Encoding", "gzip")
+		o.fs.warnCompressed.Do(func() {
+			fs.Logf(o, "Not decompressing 'Content-Encoding: gzip' compressed file. Use --gcs-decompress to override")
+		})
 	}
 	fs.OpenOptionAddHTTPHeaders(req.Header, options)
 	var res *http.Response
@@ -1177,11 +1356,14 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 // Update the object with the contents of the io.Reader, modTime and size
 //
 // The new object may have been created if an error is returned
-func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) error {
+func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (err error) {
 	bucket, bucketPath := o.split()
-	err := o.fs.checkBucket(ctx, bucket)
-	if err != nil {
-		return err
+	// Create parent dir/bucket if not saving directory marker
+	if !strings.HasSuffix(o.remote, "/") {
+		err = o.fs.mkdirParent(ctx, o.remote)
+		if err != nil {
+			return err
+		}
 	}
 	modTime := src.ModTime(ctx)
 
@@ -1226,7 +1408,11 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 		if !o.fs.opt.BucketPolicyOnly {
 			insertObject.PredefinedAcl(o.fs.opt.ObjectACL)
 		}
-		newObject, err = insertObject.Context(ctx).Do()
+		insertObject = insertObject.Context(ctx)
+		if o.fs.opt.UserProject != "" {
+			insertObject = insertObject.UserProject(o.fs.opt.UserProject)
+		}
+		newObject, err = insertObject.Do()
 		return shouldRetry(ctx, err)
 	})
 	if err != nil {
@@ -1241,7 +1427,11 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 func (o *Object) Remove(ctx context.Context) (err error) {
 	bucket, bucketPath := o.split()
 	err = o.fs.pacer.Call(func() (bool, error) {
-		err = o.fs.svc.Objects.Delete(bucket, bucketPath).Context(ctx).Do()
+		deleteBucket := o.fs.svc.Objects.Delete(bucket, bucketPath).Context(ctx)
+		if o.fs.opt.UserProject != "" {
+			deleteBucket = deleteBucket.UserProject(o.fs.opt.UserProject)
+		}
+		err = deleteBucket.Do()
 		return shouldRetry(ctx, err)
 	})
 	return err

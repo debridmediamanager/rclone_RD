@@ -1,6 +1,7 @@
 ---
 title: "Rclone Filtering"
 description: "Rclone filtering, includes and excludes"
+versionIntroduced: "v1.22"
 ---
 
 # Filtering, includes and excludes
@@ -26,12 +27,12 @@ E.g. `rclone copy "remote:dir*.jpg" /path/to/dir` does not have a filter effect.
 `rclone copy remote:dir /path/to/dir --include "*.jpg"` does.
 
 **Important** Avoid mixing any two of `--include...`, `--exclude...` or
-`--filter...` flags in an rclone command. The results may not be what
+`--filter...` flags in an rclone command. The results might not be what
 you expect. Instead use a `--filter...` flag.
 
 ## Patterns for matching path/file names
 
-### Pattern syntax
+### Pattern syntax {#patterns}
 
 Here is a formal definition of the pattern syntax,
 [examples](#examples) are below.
@@ -87,7 +88,7 @@ separator or the beginning of the path/file.
                - doesn't match "afile.jpg"
                - doesn't match "directory/file.jpg"
 
-The top level of the remote may not be the top level of the drive.
+The top level of the remote might not be the top level of the drive.
 
 E.g. for a Microsoft Windows local directory structure
 
@@ -165,7 +166,7 @@ Which will match a directory called `start` with a file called
 `end.jpg` in it as the `.*` will match `/` characters.
 
 Note that you can use `-vv --dump filters` to show the filter patterns
-in regexp format - rclone implements the glob patters by transforming
+in regexp format - rclone implements the glob patterns by transforming
 them into regular expressions.
 
 ## Filter pattern examples {#examples}
@@ -177,7 +178,7 @@ them into regular expressions.
 | Rooted      | `/*.jpg` | `/file.jpg`    | `/file.png`    |
 |             |          | `/file2.jpg`    | `/dir/file.jpg` |
 | Alternates  | `*.{jpg,png}` | `/file.jpg`     | `/file.gif`    |
-|             |         | `/dir/file.gif` | `/dir/file.gif` |
+|             |         | `/dir/file.png` | `/dir/file.gif` |
 | Path Wildcard | `dir/**` | `/dir/anyfile`     | `file.png`    |
 |             |          | `/subdir/dir/subsubdir/anyfile` | `/subdir/file.png` |
 | Any Char    | `*.t?t` | `/file.txt`     | `/file.qxt`    |
@@ -193,7 +194,7 @@ them into regular expressions.
 | Rooted Regexp | `/{{.*\.jpe?g}}` | `/file.jpeg`  | `/file.png`    |
 |             |                  | `/file.jpg`   | `/dir/file.jpg` |
 
-## How filter rules are applied to files
+## How filter rules are applied to files {#how-filter-rules-work}
 
 Rclone path/file name filters are made up of one or more of the following flags:
 
@@ -274,7 +275,7 @@ every path against the supplied regular expression(s).
 Directory recursion optimisation occurs if either:
 
 * A source remote does not support the rclone `ListR` primitive. local,
-sftp, Microsoft OneDrive and WebDav do not support `ListR`. Google
+sftp, Microsoft OneDrive and WebDAV do not support `ListR`. Google
 Drive and most bucket type storage do. [Full list](https://rclone.org/overview/#optional-features)
 
 * On other remotes (those that support `ListR`), if the rclone command is not naturally recursive, and
@@ -366,7 +367,7 @@ all files on `remote:` excluding those in root directory `dir` and sub
 directories.
 
 E.g. on Microsoft Windows `rclone ls remote: --exclude "*\[{JP,KR,HK}\]*"`
-lists the files in `remote:` with `[JP]` or `[KR]` or `[HK]` in
+lists the files in `remote:` without `[JP]` or `[KR]` or `[HK]` in
 their name. Quotes prevent the shell from interpreting the `\`
 characters.`\` characters escape the `[` and `]` so an rclone filter
 treats them literally rather than as a character-range. The `{` and `}`
@@ -677,6 +678,8 @@ Default units are `KiB` but abbreviations `K`, `M`, `G`, `T` or `P` are valid.
 E.g. `rclone ls remote: --min-size 50k` lists files on `remote:` of 50 KiB
 size or larger.
 
+See [the size option docs](/docs/#size-option) for more info.
+
 ### `--max-size` - Don't transfer any file larger than this
 
 Controls the maximum size file within the scope of an rclone command.
@@ -685,32 +688,18 @@ Default units are `KiB` but abbreviations `K`, `M`, `G`, `T` or `P` are valid.
 E.g. `rclone ls remote: --max-size 1G` lists files on `remote:` of 1 GiB
 size or smaller.
 
+See [the size option docs](/docs/#size-option) for more info.
+
 ### `--max-age` - Don't transfer any file older than this
 
 Controls the maximum age of files within the scope of an rclone command.
-Default units are seconds or the following abbreviations are valid:
-
-  * `ms` - Milliseconds
-  * `s`  - Seconds
-  * `m`  - Minutes
-  * `h`  - Hours
-  * `d`  - Days
-  * `w`  - Weeks
-  * `M`  - Months
-  * `y`  - Years
-
-`--max-age` can also be specified as an absolute time in the following
-formats:
-
-- RFC3339 - e.g. `2006-01-02T15:04:05Z` or `2006-01-02T15:04:05+07:00`
-- ISO8601 Date and time, local timezone - `2006-01-02T15:04:05`
-- ISO8601 Date and time, local timezone - `2006-01-02 15:04:05`
-- ISO8601 Date - `2006-01-02` (YYYY-MM-DD)
 
 `--max-age` applies only to files and not to directories.
 
 E.g. `rclone ls remote: --max-age 2d` lists files on `remote:` of 2 days
 old or less.
+
+See [the time option docs](/docs/#time-option) for valid formats.
 
 ### `--min-age` - Don't transfer any file younger than this
 
@@ -722,6 +711,8 @@ Controls the minimum age of files within the scope of an rclone command.
 E.g. `rclone ls remote: --min-age 2d` lists files on `remote:` of 2 days
 old or more.
 
+See [the time option docs](/docs/#time-option) for valid formats.
+
 ## Other flags
 
 ### `--delete-excluded` - Delete files on dest excluded from sync
@@ -732,7 +723,7 @@ and `-v` first.
 In conjunction with `rclone sync`, `--delete-excluded` deletes any files
 on the destination which are excluded from the command.
 
-E.g. the scope of `rclone sync -i A: B:` can be restricted:
+E.g. the scope of `rclone sync --interactive A: B:` can be restricted:
 
     rclone --min-size 50k --delete-excluded sync A: B:
 
@@ -750,7 +741,9 @@ Useful for debugging.
 
 The `--exclude-if-present` flag controls whether a directory is
 within the scope of an rclone command based on the presence of a
-named file within it.
+named file within it. The flag can be repeated to check for
+multiple file names, presence of any of them will exclude the
+directory.
 
 This flag has a priority over other filter flags.
 
@@ -764,7 +757,42 @@ E.g. for the following directory structure:
 The command `rclone ls --exclude-if-present .ignore dir1` does
 not list `dir3`, `file3` or `.ignore`.
 
-`--exclude-if-present` can only be used once in an rclone command.
+## Metadata filters {#metadata}
+
+The metadata filters work in a very similar way to the normal file
+name filters, except they match [metadata](/docs/#metadata) on the
+object.
+
+The metadata should be specified as `key=value` patterns. This may be
+wildcarded using the normal [filter patterns](#patterns) or [regular
+expressions](#regexp).
+
+For example if you wished to list only local files with a mode of
+`100664` you could do that with:
+
+    rclone lsf -M --files-only --metadata-include "mode=100664" .
+
+Or if you wished to show files with an `atime`, `mtime` or `btime` at a given date:
+
+    rclone lsf -M --files-only --metadata-include "[abm]time=2022-12-16*" .
+
+Like file filtering, metadata filtering only applies to files not to
+directories.
+
+The filters can be applied using these flags.
+
+- `--metadata-include`      - Include metadatas matching pattern
+- `--metadata-include-from` - Read metadata include patterns from file (use - to read from stdin)
+- `--metadata-exclude`      - Exclude metadatas matching pattern
+- `--metadata-exclude-from` - Read metadata exclude patterns from file (use - to read from stdin)
+- `--metadata-filter`       - Add a metadata filtering rule
+- `--metadata-filter-from`  - Read metadata filtering patterns from a file (use - to read from stdin)
+
+Each flag can be repeated. See the section on [how filter rules are
+applied](#how-filter-rules-work) for more details - these flags work
+in an identical way to the file name filtering flags, but instead of
+file name patterns have metadata patterns.
+
 
 ## Common pitfalls
 

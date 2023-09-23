@@ -36,8 +36,10 @@ import (
 
 // File represents a file
 type File struct {
-	inode uint64 // inode number - read only
-	size  int64  // size of file - read and written with atomic int64 - must be 64 bit aligned
+	inode uint64       // inode number - read only
+	size  atomic.Int64 // size of file
+
+	muRW sync.Mutex // synchronize RWFileHandle.openPending(), RWFileHandle.close() and File.Remove
 
 	mu               sync.RWMutex                    // protects the following
 	d                *Dir                            // parent directory
@@ -45,13 +47,12 @@ type File struct {
 	o                fs.Object                       // NB o may be nil if file is being written
 	leaf             string                          // leaf name of the object
 	writers          []Handle                        // writers for this file
-	nwriters         int32                           // len(writers) which is read/updated with atomic
+	virtualModTime   *time.Time                      // modtime for backends with Precision == fs.ModTimeNotSupported
 	pendingModTime   time.Time                       // will be applied once o becomes available, i.e. after file was written
 	pendingRenameFun func(ctx context.Context) error // will be run/renamed after all writers close
-	appendMode       bool                            // file was opened with O_APPEND
 	sys              atomic.Value                    // user defined info to be attached here
-
-	muRW sync.Mutex // synchronize RWFileHandle.openPending(), RWFileHandle.close() and File.Remove
+	nwriters         atomic.Int32                    // len(writers)
+	appendMode       bool                            // file was opened with O_APPEND
 }
 
 // newFile creates a new File
@@ -66,7 +67,7 @@ func newFile(d *Dir, dPath string, o fs.Object, leaf string) *File {
 		inode: newInode(),
 	}
 	if o != nil {
-		f.size = o.Size()
+		f.size.Store(o.Size())
 	}
 	return f
 }
@@ -139,6 +140,13 @@ func (f *File) Inode() uint64 {
 // Node returns the Node associated with this - satisfies Noder interface
 func (f *File) Node() Node {
 	return f
+}
+
+// renameDir - call when parent directory has been renamed
+func (f *File) renameDir(dPath string) {
+	f.mu.RLock()
+	f.dPath = dPath
+	f.mu.RUnlock()
 }
 
 // applyPendingRename runs a previously set rename operation if there are no
@@ -258,7 +266,7 @@ func (f *File) rename(ctx context.Context, destDir *Dir, newName string) error {
 func (f *File) addWriter(h Handle) {
 	f.mu.Lock()
 	f.writers = append(f.writers, h)
-	atomic.AddInt32(&f.nwriters, 1)
+	f.nwriters.Add(1)
 	f.mu.Unlock()
 }
 
@@ -276,7 +284,7 @@ func (f *File) delWriter(h Handle) {
 	}
 	if found >= 0 {
 		f.writers = append(f.writers[:found], f.writers[found+1:]...)
-		atomic.AddInt32(&f.nwriters, -1)
+		f.nwriters.Add(-1)
 	} else {
 		fs.Debugf(f._path(), "File.delWriter couldn't find handle")
 	}
@@ -287,7 +295,7 @@ func (f *File) delWriter(h Handle) {
 // Note that we don't take the mutex here.  If we do then we can get a
 // deadlock.
 func (f *File) activeWriters() int {
-	return int(atomic.LoadInt32(&f.nwriters))
+	return int(f.nwriters.Load())
 }
 
 // _roundModTime rounds the time passed in to the Precision of the
@@ -296,6 +304,9 @@ func (f *File) activeWriters() int {
 // It should be called with the lock held
 func (f *File) _roundModTime(modTime time.Time) time.Time {
 	precision := f.d.f.Precision()
+	if precision == fs.ModTimeNotSupported {
+		return modTime
+	}
 	return modTime.Truncate(precision)
 }
 
@@ -304,8 +315,19 @@ func (f *File) _roundModTime(modTime time.Time) time.Time {
 // if NoModTime is set then it returns the mod time of the directory
 func (f *File) ModTime() (modTime time.Time) {
 	f.mu.RLock()
-	d, o, pendingModTime := f.d, f.o, f.pendingModTime
+	d, o, pendingModTime, virtualModTime := f.d, f.o, f.pendingModTime, f.virtualModTime
 	f.mu.RUnlock()
+
+	// Set the virtual modtime up for backends which don't support setting modtime
+	//
+	// Note that we only cache modtime values that we have returned to the OS
+	// if we haven't returned a value to the OS then we can change it
+	defer func() {
+		if f.d.f.Precision() == fs.ModTimeNotSupported && (virtualModTime == nil || !virtualModTime.Equal(modTime)) {
+			f.virtualModTime = &modTime
+			fs.Debugf(f._path(), "Set virtual modtime to %v", f.virtualModTime)
+		}
+	}()
 
 	if d.vfs.Opt.NoModTime {
 		return d.ModTime()
@@ -323,6 +345,10 @@ func (f *File) ModTime() (modTime time.Time) {
 	}
 	if !pendingModTime.IsZero() {
 		return f._roundModTime(pendingModTime)
+	}
+	if virtualModTime != nil && !virtualModTime.IsZero() {
+		fs.Debugf(f._path(), "Returning virtual modtime %v", f.virtualModTime)
+		return f._roundModTime(*virtualModTime)
 	}
 	if o == nil {
 		return time.Now()
@@ -357,7 +383,7 @@ func (f *File) Size() int64 {
 
 	// if o is nil it isn't valid yet or there are writers, so return the size so far
 	if f._writingInProgress() {
-		return atomic.LoadInt64(&f.size)
+		return f.size.Load()
 	}
 	return nonNegative(f.o.Size())
 }
@@ -400,7 +426,7 @@ func (f *File) _applyPendingModTime() error {
 	defer func() { f.pendingModTime = time.Time{} }()
 
 	if f.o == nil {
-		return errors.New("Cannot apply ModTime, file object is not available")
+		return errors.New("cannot apply ModTime, file object is not available")
 	}
 
 	dt := f.pendingModTime.Sub(f.o.ModTime(context.Background()))
@@ -447,7 +473,7 @@ func (f *File) writingInProgress() bool {
 
 // Update the size while writing
 func (f *File) setSize(n int64) {
-	atomic.StoreInt64(&f.size, n)
+	f.size.Store(n)
 }
 
 // Update the object when written and add it to the directory
@@ -467,6 +493,8 @@ func (f *File) setObject(o fs.Object) {
 func (f *File) setObjectNoUpdate(o fs.Object) {
 	f.mu.Lock()
 	f.o = o
+	f.virtualModTime = nil
+	fs.Debugf(f._path(), "Reset virtual modtime")
 	f.mu.Unlock()
 }
 
@@ -587,10 +615,6 @@ func (f *File) Remove() (err error) {
 		wasWriting = d.vfs.cache.Remove(f.Path())
 	}
 
-	// Remove the item from the directory listing
-	// called with File.mu released
-	d.delObject(f.Name())
-
 	f.muRW.Lock() // muRW must be locked before mu to avoid
 	f.mu.Lock()   // deadlock in RWFileHandle.openPending and .close
 	if f.o != nil {
@@ -606,6 +630,12 @@ func (f *File) Remove() (err error) {
 		} else {
 			fs.Debugf(f._path(), "File.Remove file error: %v", err)
 		}
+	}
+
+	// Remove the item from the directory listing
+	// called with File.mu released when there is no error removing the underlying file
+	if err == nil {
+		d.delObject(f.Name())
 	}
 	return err
 }
@@ -645,15 +675,15 @@ func (f *File) Fs() fs.Fs {
 
 // Open a file according to the flags provided
 //
-//   O_RDONLY open the file read-only.
-//   O_WRONLY open the file write-only.
-//   O_RDWR   open the file read-write.
+//	O_RDONLY open the file read-only.
+//	O_WRONLY open the file write-only.
+//	O_RDWR   open the file read-write.
 //
-//   O_APPEND append data to the file when writing.
-//   O_CREATE create a new file if none exists.
-//   O_EXCL   used with O_CREATE, file must not exist
-//   O_SYNC   open for synchronous I/O.
-//   O_TRUNC  if possible, truncate file when opened
+//	O_APPEND append data to the file when writing.
+//	O_CREATE create a new file if none exists.
+//	O_EXCL   used with O_CREATE, file must not exist
+//	O_SYNC   open for synchronous I/O.
+//	O_TRUNC  if possible, truncate file when opened
 //
 // We ignore O_SYNC and O_EXCL
 func (f *File) Open(flags int) (fd Handle, err error) {
@@ -695,6 +725,11 @@ func (f *File) Open(flags int) (fd Handle, err error) {
 
 	// If truncate is set then set write to force openRW
 	if flags&os.O_TRUNC != 0 {
+		write = true
+	}
+
+	// If create is set then set write to force openRW
+	if flags&os.O_CREATE != 0 {
 		write = true
 	}
 

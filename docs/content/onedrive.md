@@ -1,6 +1,7 @@
 ---
 title: "Microsoft OneDrive"
 description: "Rclone docs for Microsoft OneDrive"
+versionIntroduced: "v1.24"
 ---
 
 # {{< icon "fab fa-windows" >}} Microsoft OneDrive
@@ -52,9 +53,10 @@ y) Yes
 n) No
 y/n> n
 Remote config
-Use auto config?
- * Say Y if not sure
- * Say N if you are working on a remote or headless machine
+Use web browser to automatically authenticate rclone with remote?
+ * Say Y if the machine running rclone has a web browser you can use
+ * Say N if running rclone on a (remote) machine without web browser access
+If not sure try Y. If Y failed, try N.
 y) Yes
 n) No
 y/n> y
@@ -120,24 +122,45 @@ To copy a local directory to an OneDrive directory called backup
 
 ### Getting your own Client ID and Key
 
-You can use your own Client ID if the default (`client_id` left blank)
-one doesn't work for you or you see lots of throttling. The default
-Client ID and Key is shared by all rclone users when performing
-requests.
+rclone uses a default Client ID when talking to OneDrive, unless a custom `client_id` is specified in the config.
+The default Client ID and Key are shared by all rclone users when performing requests.
 
-If you are having problems with them (E.g., seeing a lot of throttling), you can get your own
-Client ID and Key by following the steps below:
+You may choose to create and use your own Client ID, in case the default one does not work well for you. 
+For example, you might see throttling.
+
+#### Creating Client ID for OneDrive Personal
+
+To create your own Client ID, please follow these steps:
 
 1. Open https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationsListBlade and then click `New registration`.
 2. Enter a name for your app, choose account type `Accounts in any organizational directory (Any Azure AD directory - Multitenant) and personal Microsoft accounts (e.g. Skype, Xbox)`, select `Web` in `Redirect URI`, then type (do not copy and paste) `http://localhost:53682/` and click Register. Copy and keep the `Application (client) ID` under the app name for later use.
 3. Under `manage` select `Certificates & secrets`, click `New client secret`. Enter a description (can be anything) and set `Expires` to 24 months. Copy and keep that secret _Value_ for later use (you _won't_ be able to see this value afterwards).
 4. Under `manage` select `API permissions`, click `Add a permission` and select `Microsoft Graph` then select `delegated permissions`.
-5. Search and select the following permissions: `Files.Read`, `Files.ReadWrite`, `Files.Read.All`, `Files.ReadWrite.All`, `offline_access`, `User.Read`, and optionally `Sites.Read.All` (see below). Once selected click `Add permissions` at the bottom.
+5. Search and select the following permissions: `Files.Read`, `Files.ReadWrite`, `Files.Read.All`, `Files.ReadWrite.All`, `offline_access`, `User.Read` and `Sites.Read.All` (if custom access scopes are configured, select the permissions accordingly). Once selected click `Add permissions` at the bottom.
 
 Now the application is complete. Run `rclone config` to create or edit a OneDrive remote.
 Supply the app ID and password as Client ID and Secret, respectively. rclone will walk you through the remaining steps.
 
-The `Sites.Read.All` permission is required if you need to [search SharePoint sites when configuring the remote](https://github.com/rclone/rclone/pull/5883). However, if that permission is not assigned, you need to set `disable_site_permission` option to true in the advanced options.
+The access_scopes option allows you to configure the permissions requested by rclone.
+See [Microsoft Docs](https://docs.microsoft.com/en-us/graph/permissions-reference#files-permissions) for more information about the different scopes.
+
+The `Sites.Read.All` permission is required if you need to [search SharePoint sites when configuring the remote](https://github.com/rclone/rclone/pull/5883). However, if that permission is not assigned, you need to exclude `Sites.Read.All` from your access scopes or set `disable_site_permission` option to true in the advanced options.
+
+#### Creating Client ID for OneDrive Business
+
+The steps for OneDrive Personal may or may not work for OneDrive Business, depending on the security settings of the organization.
+A common error is that the publisher of the App is not verified.
+
+You may try to [verify you account](https://docs.microsoft.com/en-us/azure/active-directory/develop/publisher-verification-overview), or try to limit the App to your organization only, as shown below.
+
+1. Make sure to create the App with your business account.
+2. Follow the steps above to create an App. However, we need a different account type here: `Accounts in this organizational directory only (*** - Single tenant)`. Note that you can also change the account type after creating the App.
+3. Find the [tenant ID](https://docs.microsoft.com/en-us/azure/active-directory/fundamentals/active-directory-how-to-find-tenant) of your organization.
+4. In the rclone config, set `auth_url` to `https://login.microsoftonline.com/YOUR_TENANT_ID/oauth2/v2.0/authorize`.
+5. In the rclone config, set `token_url` to `https://login.microsoftonline.com/YOUR_TENANT_ID/oauth2/v2.0/token`.
+
+Note: If you have a special region, you may need a different host in step 4 and 5. Here are [some hints](https://github.com/rclone/rclone/blob/bc23bf11db1c78c6ebbf8ea538fbebf7058b4176/backend/onedrive/onedrive.go#L86).
+
 
 ### Modification time and hashes
 
@@ -145,9 +168,18 @@ OneDrive allows modification times to be set on objects accurate to 1
 second.  These will be used to detect whether objects need syncing or
 not.
 
-OneDrive personal supports SHA1 type hashes. OneDrive for business and
-Sharepoint Server support
+OneDrive Personal, OneDrive for Business and Sharepoint Server support
 [QuickXorHash](https://docs.microsoft.com/en-us/onedrive/developer/code-snippets/quickxorhash).
+
+Before rclone 1.62 the default hash for Onedrive Personal was `SHA1`.
+For rclone 1.62 and above the default for all Onedrive backends is
+`QuickXorHash`.
+
+Starting from July 2023 `SHA1` support is being phased out in Onedrive
+Personal in favour of `QuickXorHash`. If necessary the
+`--onedrive-hash-type` flag (or `hash_type` config option) can be used
+to select `SHA1` during the transition period if this is important
+your workflow.
 
 For all types of OneDrive you can use the `--checksum` flag.
 
@@ -196,7 +228,7 @@ the OneDrive website.
 {{< rem autogenerated options start" - DO NOT EDIT - instead edit fs.RegInfo in backend/onedrive/onedrive.go then run make backenddocs" >}}
 ### Standard options
 
-Here are the standard options specific to onedrive (Microsoft OneDrive).
+Here are the Standard options specific to onedrive (Microsoft OneDrive).
 
 #### --onedrive-client-id
 
@@ -242,11 +274,11 @@ Properties:
     - "de"
         - Microsoft Cloud Germany
     - "cn"
-        - Azure and Office 365 operated by 21Vianet in China
+        - Azure and Office 365 operated by Vnet Group in China
 
 ### Advanced options
 
-Here are the advanced options specific to onedrive (Microsoft OneDrive).
+Here are the Advanced options specific to onedrive (Microsoft OneDrive).
 
 #### --onedrive-token
 
@@ -338,6 +370,28 @@ Properties:
 - Type:        string
 - Required:    false
 
+#### --onedrive-access-scopes
+
+Set scopes to be requested by rclone.
+
+Choose or manually enter a custom space separated list with all scopes, that rclone should request.
+
+
+Properties:
+
+- Config:      access_scopes
+- Env Var:     RCLONE_ONEDRIVE_ACCESS_SCOPES
+- Type:        SpaceSepList
+- Default:     Files.Read Files.ReadWrite Files.Read.All Files.ReadWrite.All Sites.Read.All offline_access
+- Examples:
+    - "Files.Read Files.ReadWrite Files.Read.All Files.ReadWrite.All Sites.Read.All offline_access"
+        - Read and write access to all resources
+    - "Files.Read Files.Read.All Sites.Read.All offline_access"
+        - Read only access to all resources
+    - "Files.Read Files.ReadWrite Files.Read.All Files.ReadWrite.All offline_access"
+        - Read and write access to all resources, without the ability to browse SharePoint sites. 
+        - Same as if disable_site_permission was set to true
+
 #### --onedrive-disable-site-permission
 
 Disable the request for Sites.Read.All permission.
@@ -373,6 +427,8 @@ Properties:
 - Default:     false
 
 #### --onedrive-server-side-across-configs
+
+Deprecated: use --server-side-across-configs instead.
 
 Allow server-side operations (e.g. copy) to work across different onedrive configs.
 
@@ -472,6 +528,72 @@ Properties:
 - Type:        string
 - Required:    false
 
+#### --onedrive-hash-type
+
+Specify the hash in use for the backend.
+
+This specifies the hash type in use. If set to "auto" it will use the
+default hash which is QuickXorHash.
+
+Before rclone 1.62 an SHA1 hash was used by default for Onedrive
+Personal. For 1.62 and later the default is to use a QuickXorHash for
+all onedrive types. If an SHA1 hash is desired then set this option
+accordingly.
+
+From July 2023 QuickXorHash will be the only available hash for
+both OneDrive for Business and OneDriver Personal.
+
+This can be set to "none" to not use any hashes.
+
+If the hash requested does not exist on the object, it will be
+returned as an empty string which is treated as a missing hash by
+rclone.
+
+
+Properties:
+
+- Config:      hash_type
+- Env Var:     RCLONE_ONEDRIVE_HASH_TYPE
+- Type:        string
+- Default:     "auto"
+- Examples:
+    - "auto"
+        - Rclone chooses the best hash
+    - "quickxor"
+        - QuickXor
+    - "sha1"
+        - SHA1
+    - "sha256"
+        - SHA256
+    - "crc32"
+        - CRC32
+    - "none"
+        - None - don't use any hashes
+
+#### --onedrive-av-override
+
+Allows download of files the server thinks has a virus.
+
+The onedrive/sharepoint server may check files uploaded with an Anti
+Virus checker. If it detects any potential viruses or malware it will
+block download of the file.
+
+In this case you will see a message like this
+
+    server reports this file is infected with a virus - use --onedrive-av-override to download anyway: Infected (name of virus): 403 Forbidden: 
+
+If you are 100% sure you want to download this file anyway then use
+the --onedrive-av-override flag, or av_override = true in the config
+file.
+
+
+Properties:
+
+- Config:      av_override
+- Env Var:     RCLONE_ONEDRIVE_AV_OVERRIDE
+- Type:        bool
+- Default:     false
+
 #### --onedrive-encoding
 
 The encoding for the backend.
@@ -525,7 +647,7 @@ An official document about the limitations for different types of OneDrive can b
 ## Versions
 
 Every change in a file OneDrive causes the service to create a new
-version of the the file.  This counts against a users quota.  For
+version of the file.  This counts against a users quota.  For
 example changing the modification time of a file creates a second
 version, so the file apparently uses twice the space.
 
@@ -584,11 +706,11 @@ OneDrive supports `rclone cleanup` which causes rclone to look through
 every file under the path supplied and delete all version but the
 current version. Because this involves traversing all the files, then
 querying each file for versions it can be quite slow. Rclone does
-`--checkers` tests in parallel. The command also supports `-i` which
-is a great way to see what it would do.
+`--checkers` tests in parallel. The command also supports `--interactive`/`i`
+or `--dry-run` which is a great way to see what it would do.
 
-    rclone cleanup -i remote:path/subdir # interactively remove all old version for path/subdir
-    rclone cleanup remote:path/subdir    # unconditionally remove all old version for path/subdir
+    rclone cleanup --interactive remote:path/subdir # interactively remove all old version for path/subdir
+    rclone cleanup remote:path/subdir               # unconditionally remove all old version for path/subdir
 
 **NB** Onedrive personal can't currently delete versions
 
@@ -649,7 +771,7 @@ Description: Using application 'rclone' is currently not supported for your orga
 
 This means that rclone can't use the OneDrive for Business API with your account. You can't do much about it, maybe write an email to your admins.
 
-However, there are other ways to interact with your OneDrive account. Have a look at the webdav backend: https://rclone.org/webdav/#sharepoint
+However, there are other ways to interact with your OneDrive account. Have a look at the WebDAV backend: https://rclone.org/webdav/#sharepoint
 
 ### invalid\_grant (AADSTS50076) ####
 
@@ -669,3 +791,49 @@ public links to be made for the organisation/sharepoint library. To fix the
 permissions as an admin, take a look at the docs:
 [1](https://docs.microsoft.com/en-us/sharepoint/turn-external-sharing-on-or-off),
 [2](https://support.microsoft.com/en-us/office/set-up-and-manage-access-requests-94b26e0b-2822-49d4-929a-8455698654b3).
+
+### Can not access `Shared` with me files
+
+Shared with me files is not supported by rclone [currently](https://github.com/rclone/rclone/issues/4062), but there is a workaround:
+
+1. Visit [https://onedrive.live.com](https://onedrive.live.com/)
+2. Right click a item in `Shared`, then click `Add shortcut to My files` in the context
+    ![make_shortcut](https://user-images.githubusercontent.com/60313789/206118040-7e762b3b-aa61-41a1-8649-cc18889f3572.png "Screenshot (Shared with me)")
+3. The shortcut will appear in `My files`, you can access it with rclone, it behaves like a normal folder/file.
+    ![in_my_files](https://i.imgur.com/0S8H3li.png "Screenshot (My Files)")
+    ![rclone_mount](https://i.imgur.com/2Iq66sW.png "Screenshot (rclone mount)")
+
+### Live Photos uploaded from iOS (small video clips in .heic files)
+
+The iOS OneDrive app introduced [upload and storage](https://techcommunity.microsoft.com/t5/microsoft-onedrive-blog/live-photos-come-to-onedrive/ba-p/1953452) 
+of [Live Photos](https://support.apple.com/en-gb/HT207310) in 2020. 
+The usage and download of these uploaded Live Photos is unfortunately still work-in-progress 
+and this introduces several issues when copying, synchronising and mounting – both in rclone and in the native OneDrive client on Windows.
+
+The root cause can easily be seen if you locate one of your Live Photos in the OneDrive web interface. 
+Then download the photo from the web interface. You will then see that the size of downloaded .heic file is smaller than the size displayed in the web interface. 
+The downloaded file is smaller because it only contains a single frame (still photo) extracted from the Live Photo (movie) stored in OneDrive.
+
+The different sizes will cause `rclone copy/sync` to repeatedly recopy unmodified photos something like this:
+
+    DEBUG : 20230203_123826234_iOS.heic: Sizes differ (src 4470314 vs dst 1298667)
+    DEBUG : 20230203_123826234_iOS.heic: sha1 = fc2edde7863b7a7c93ca6771498ac797f8460750 OK
+    INFO  : 20230203_123826234_iOS.heic: Copied (replaced existing)
+
+These recopies can be worked around by adding `--ignore-size`. Please note that this workaround only syncs the still-picture not the movie clip, 
+and relies on modification dates being correctly updated on all files in all situations.
+
+The different sizes will also cause `rclone check` to report size errors something like this:
+
+    ERROR : 20230203_123826234_iOS.heic: sizes differ
+
+These check errors can be suppressed by adding `--ignore-size`.
+
+The different sizes will also cause `rclone mount` to fail downloading with an error something like this:
+
+    ERROR : 20230203_123826234_iOS.heic: ReadFileHandle.Read error: low level retry 1/10: unexpected EOF
+
+or like this when using `--cache-mode=full`:
+
+    INFO  : 20230203_123826234_iOS.heic: vfs cache: downloader: error count now 1: vfs reader: failed to write to cache file: 416 Requested Range Not Satisfiable:
+    ERROR : 20230203_123826234_iOS.heic: vfs cache: failed to download: vfs reader: failed to write to cache file: 416 Requested Range Not Satisfiable:

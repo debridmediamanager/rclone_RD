@@ -97,6 +97,10 @@ func mountRc(ctx context.Context, in rc.Params) (out rc.Params, err error) {
 		return nil, err
 	}
 
+	if mountOpt.Daemon {
+		return nil, errors.New("daemon option not supported over the API")
+	}
+
 	mountType, err := in.GetString("mountType")
 
 	mountMu.Lock()
@@ -107,7 +111,7 @@ func mountRc(ctx context.Context, in rc.Params) (out rc.Params, err error) {
 	}
 	mountType, mountFn := ResolveMountMethod(mountType)
 	if mountFn == nil {
-		return nil, errors.New("Mount Option specified is not registered, or is invalid")
+		return nil, errors.New("mount option specified is not registered, or is invalid")
 	}
 
 	// Get Fs.fs to be mounted from fs parameter in the params
@@ -122,7 +126,15 @@ func mountRc(ctx context.Context, in rc.Params) (out rc.Params, err error) {
 		log.Printf("mount FAILED: %v", err)
 		return nil, err
 	}
-
+	go func() {
+		if err = mnt.Wait(); err != nil {
+			log.Printf("unmount FAILED: %v", err)
+			return
+		}
+		mountMu.Lock()
+		defer mountMu.Unlock()
+		delete(liveMounts, mountPoint)
+	}()
 	// Add mount to list if mount point was successfully created
 	liveMounts[mountPoint] = mnt
 
@@ -246,7 +258,7 @@ func listMountsRc(_ context.Context, in rc.Params) (out rc.Params, err error) {
 	for _, k := range keys {
 		m := liveMounts[k]
 		info := MountInfo{
-			Fs:         m.Fs.Name(),
+			Fs:         fs.ConfigString(m.Fs),
 			MountPoint: m.MountPoint,
 			MountedOn:  m.MountedOn,
 		}
@@ -262,8 +274,11 @@ func init() {
 		Path:         "mount/unmountall",
 		AuthRequired: true,
 		Fn:           unmountAll,
-		Title:        "Show current mount points",
-		Help: `This shows currently mounted points, which can be used for performing an unmount.
+		Title:        "Unmount all active mounts",
+		Help: `
+rclone allows Linux, FreeBSD, macOS and Windows to
+mount any of Rclone's cloud storage systems as a file system with
+FUSE.
 
 This takes no parameters and returns error if unmount does not succeed.
 

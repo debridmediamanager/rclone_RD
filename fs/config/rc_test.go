@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	_ "github.com/rclone/rclone/backend/local"
@@ -68,6 +69,10 @@ func TestRc(t *testing.T) {
 	})
 
 	t.Run("ListRemotes", func(t *testing.T) {
+		assert.NoError(t, os.Setenv("RCLONE_CONFIG_MY-LOCAL_TYPE", "local"))
+		defer func() {
+			assert.NoError(t, os.Unsetenv("RCLONE_CONFIG_MY-LOCAL_TYPE"))
+		}()
 		call := rc.Calls.Get("config/listremotes")
 		assert.NotNil(t, call)
 		in := rc.Params{}
@@ -80,6 +85,7 @@ func TestRc(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.Contains(t, remotes, testName)
+		assert.Contains(t, remotes, "my-local")
 	})
 
 	t.Run("Update", func(t *testing.T) {
@@ -152,4 +158,22 @@ func TestRcProviders(t *testing.T) {
 		}
 	}
 	assert.True(t, foundLocal, "didn't find local provider")
+}
+
+func TestRcSetPath(t *testing.T) {
+	oldPath := config.GetConfigPath()
+	newPath := oldPath + ".newPath"
+	call := rc.Calls.Get("config/setpath")
+	assert.NotNil(t, call)
+	in := rc.Params{
+		"path": newPath,
+	}
+	_, err := call.Fn(context.Background(), in)
+	require.NoError(t, err)
+	assert.Equal(t, newPath, config.GetConfigPath())
+
+	in["path"] = oldPath
+	_, err = call.Fn(context.Background(), in)
+	require.NoError(t, err)
+	assert.Equal(t, oldPath, config.GetConfigPath())
 }

@@ -1,3 +1,4 @@
+// Package about provides the about command.
 package about
 
 import (
@@ -21,8 +22,8 @@ var (
 func init() {
 	cmd.Root.AddCommand(commandDefinition)
 	cmdFlags := commandDefinition.Flags()
-	flags.BoolVarP(cmdFlags, &jsonOutput, "json", "", false, "Format output as JSON")
-	flags.BoolVarP(cmdFlags, &fullOutput, "full", "", false, "Full numbers instead of human-readable")
+	flags.BoolVarP(cmdFlags, &jsonOutput, "json", "", false, "Format output as JSON", "")
+	flags.BoolVarP(cmdFlags, &fullOutput, "full", "", false, "Full numbers instead of human-readable", "")
 }
 
 // printValue formats uv to be output
@@ -92,6 +93,10 @@ provided by a backend. Where the value is unlimited it is omitted.
 Some backends does not support the ` + "`rclone about`" + ` command at all,
 see complete list in [documentation](https://rclone.org/overview/#optional-features).
 `,
+	Annotations: map[string]string{
+		"versionIntroduced": "v1.41",
+		// "groups":            "",
+	},
 	Run: func(command *cobra.Command, args []string) {
 		cmd.CheckArgs(1, 1, command, args)
 		f := cmd.NewFsSrc(args)

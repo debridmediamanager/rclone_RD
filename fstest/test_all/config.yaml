@@ -21,6 +21,11 @@ backends:
    remote:   "TestB2:"
    fastlist: true
    listretries: 5
+   ignore:
+     # This test fails because B2 versions make the empty bucket undeleteable.
+     # It isn't possible to turn off versions, and setting hard_delete doesn't stop
+     # versions being made on overwrite.
+     - TestRmdirsNoLeaveRoot
  - backend:  "crypt"
    remote:   "TestCryptDrive:"
    fastlist: true
@@ -91,6 +96,9 @@ backends:
    fastlist: true
    maxfile:  1k
  ## end chunker
+ - backend:  "combine"
+   remote:   "TestCombine:dir1"
+   fastlist: false
  ## begin compress
  - backend:  "compress"
    remote:   "TestCompress:"
@@ -119,23 +127,29 @@ backends:
      # This test doesn't work on a standard dropbox account because it
      # tries to set the expiry of the link
      - TestIntegration/FsMkdir/FsPutFiles/PublicLink
- - backend:  "filefabric"
-   remote:   "TestFileFabric:"
-   fastlist: false
-   extratime: 2.0
+ # - backend:  "filefabric"
+ #   remote:   "TestFileFabric:"
+ #   fastlist: false
+ #   extratime: 2.0
  - backend:  "googlecloudstorage"
    remote:   "TestGoogleCloudStorage:"
+   fastlist: true
+ - backend:  "googlecloudstorage"
+   remote:   "TestGoogleCloudStorage,directory_markers:"
    fastlist: true
  - backend:  "googlephotos"
    remote:   "TestGooglePhotos:"
    tests:
      - backend
- - backend:  "hubic"
-   remote:   "TestHubic:"
+ - backend: "hidrive"
+   remote:   "TestHiDrive:"
    fastlist: false
  - backend:  "internetarchive"
    remote:   "TestIA:rclone-integration-test"
    fastlist: true
+   tests:
+     - backend
+   extratime: 2.0
  - backend:  "jottacloud"
    remote:   "TestJottacloud:"
    fastlist: true
@@ -160,6 +174,9 @@ backends:
  #   fastlist: false
  - backend:  "s3"
    remote:   "TestS3:"
+   fastlist: true
+ - backend:  "s3"
+   remote:   "TestS3,directory_markers:"
    fastlist: true
  - backend:  "s3"
    remote:   "TestS3Minio:"
@@ -204,6 +221,17 @@ backends:
  - backend:  "s3"
    remote:   "TestS3Alibaba:"
    fastlist: true
+ # - backend:  "s3"
+ #   remote:   "TestS3Qiniu:"
+ #   fastlist: true
+ #   ignore:
+ #     - TestIntegration/FsMkdir/FsEncoding/control_chars
+ #     - TestIntegration/FsMkdir/FsEncoding/leading_VT
+ #     - TestIntegration/FsMkdir/FsEncoding/trailing_VT
+ #     - TestIntegration/FsMkdir/FsPutFiles/FromRoot/ListR
+ #     - TestIntegration/FsMkdir/FsPutFiles/SetTier
+ #     - TestIntegration/FsMkdir/FsPutFiles/FsPutStream/0
+ #     - TestIntegration/FsMkdir/FsPutFiles/Internal/Metadata
  - backend:  "s3"
    remote:   "TestS3R2:"
    fastlist: true
@@ -214,6 +242,9 @@ backends:
    fastlist: false
  - backend:  "sftp"
    remote:   "TestSFTPRclone:"
+   fastlist: false
+ - backend:  "sftp"
+   remote:   "TestSFTPRcloneSSH:"
    fastlist: false
  - backend:  "sftp"
    remote:   "TestSFTPRsyncNet:"
@@ -282,9 +313,23 @@ backends:
  - backend:  "azureblob"
    remote:   "TestAzureBlob:"
    fastlist: true
+ - backend:  "azureblob"
+   remote:   "TestAzureBlob,directory_markers:"
+   fastlist: true
  - backend:  "pcloud"
    remote:   "TestPcloud:"
    fastlist: true
+ - backend:  "pikpak"
+   remote:   "TestPikPak:"
+   fastlist: false
+   ignore:
+    #  fs/operations
+     - TestCheckSum
+     - TestHashSums/Md5
+    #  fs/sync
+     - TestSyncWithTrackRenames
+    # integration
+     - TestIntegration/FsMkdir/FsPutFiles/ObjectMimeType
  - backend:  "webdav"
    remote:   "TestWebdavNextcloud:"
    ignore:
@@ -296,10 +341,6 @@ backends:
    ignore:
      - TestIntegration/FsMkdir/FsEncoding/punctuation
      - TestIntegration/FsMkdir/FsEncoding/invalid_UTF-8
-     - TestIntegration/FsMkdir/FsPutFiles/FsCopy
-     - TestCopyFileCopyDest
-     - TestServerSideCopy
-     - TestSyncCopyDest
    fastlist: false
  - backend:  "webdav"
    remote:   "TestWebdavRclone:"
@@ -329,6 +370,9 @@ backends:
  #   fastlist: false
  - backend:  "premiumizeme"
    remote:   "TestPremiumizeMe:"
+   fastlist: false
+ - backend:  "protondrive"
+   remote:   "TestProtonDrive:"
    fastlist: false
  - backend:  "putio"
    remote:   "TestPutio:"
@@ -360,6 +404,9 @@ backends:
  - backend:  "sia"
    remote:   "TestSia:"
    fastlist: false
+ - backend:  "smb"
+   remote:   "TestSMB:rclone"
+   fastlist: false
  - backend:  "storj"
    remote:   "TestStorj:"
    fastlist: true
@@ -376,3 +423,17 @@ backends:
    fastlist: false
    ignore:
      - TestRWFileHandleWriteNoWrite
+ - backend: "oracleobjectstorage"
+   remote: "TestOracleObjectStorage:"
+   fastlist: true
+   ignore:
+     - TestIntegration/FsMkdir/FsEncoding/control_chars
+     - TestIntegration/FsMkdir/FsEncoding/leading_CR
+     - TestIntegration/FsMkdir/FsEncoding/leading_LF
+     - TestIntegration/FsMkdir/FsEncoding/trailing_CR
+     - TestIntegration/FsMkdir/FsEncoding/trailing_LF
+     - TestIntegration/FsMkdir/FsEncoding/leading_HT
+     - TestIntegration/FsMkdir/FsPutFiles/FsPutStream/0
+ - backend:  "quatrix"
+   remote:   "TestQuatrix:"
+   fastlist: false

@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"path"
 	"strconv"
 	"strings"
@@ -40,7 +39,7 @@ const (
 	minSleep                   = 10 * time.Millisecond // In case of error, start at 10ms sleep.
 )
 
-// SharedOptions are shared between swift and hubic
+// SharedOptions are shared between swift and backends which depend on swift
 var SharedOptions = []fs.Option{{
 	Name: "chunk_size",
 	Help: `Above this size files will be chunked into a _segments container.
@@ -64,6 +63,32 @@ copy operations.`,
 	Default:  false,
 	Advanced: true,
 }, {
+	Name: "no_large_objects",
+	Help: strings.ReplaceAll(`Disable support for static and dynamic large objects
+
+Swift cannot transparently store files bigger than 5 GiB. There are
+two schemes for doing that, static or dynamic large objects, and the
+API does not allow rclone to determine whether a file is a static or
+dynamic large object without doing a HEAD on the object. Since these
+need to be treated differently, this means rclone has to issue HEAD
+requests for objects for example when reading checksums.
+
+When |no_large_objects| is set, rclone will assume that there are no
+static or dynamic large objects stored. This means it can stop doing
+the extra HEAD calls which in turn increases performance greatly
+especially when doing a swift to swift transfer with |--checksum| set.
+
+Setting this option implies |no_chunk| and also that no files will be
+uploaded in chunks, so files bigger than 5 GiB will just fail on
+upload.
+
+If you set this option and there *are* static or dynamic large objects,
+then this will give incorrect hashes for them. Downloads will succeed,
+but other operations such as Remove and Copy will fail.
+`, "|", "`"),
+	Default:  false,
+	Advanced: true,
+}, {
 	Name:     config.ConfigEncoding,
 	Help:     config.ConfigEncodingHelp,
 	Advanced: true,
@@ -75,7 +100,7 @@ copy operations.`,
 func init() {
 	fs.Register(&fs.RegInfo{
 		Name:        "swift",
-		Description: "OpenStack Swift (Rackspace Cloud Files, Memset Memstore, OVH)",
+		Description: "OpenStack Swift (Rackspace Cloud Files, Blomp Cloud Storage, Memset Memstore, OVH)",
 		NewFs:       NewFs,
 		Options: append([]fs.Option{{
 			Name:    "env_auth",
@@ -91,11 +116,13 @@ func init() {
 				},
 			},
 		}, {
-			Name: "user",
-			Help: "User name to log in (OS_USERNAME).",
+			Name:      "user",
+			Help:      "User name to log in (OS_USERNAME).",
+			Sensitive: true,
 		}, {
-			Name: "key",
-			Help: "API key or password (OS_PASSWORD).",
+			Name:      "key",
+			Help:      "API key or password (OS_PASSWORD).",
+			Sensitive: true,
 		}, {
 			Name: "auth",
 			Help: "Authentication URL for server (OS_AUTH_URL).",
@@ -117,22 +144,30 @@ func init() {
 			}, {
 				Value: "https://auth.cloud.ovh.net/v3",
 				Help:  "OVH",
+			}, {
+				Value: "https://authenticate.ain.net",
+				Help:  "Blomp Cloud Storage",
 			}},
 		}, {
-			Name: "user_id",
-			Help: "User ID to log in - optional - most swift systems use user and leave this blank (v3 auth) (OS_USER_ID).",
+			Name:      "user_id",
+			Help:      "User ID to log in - optional - most swift systems use user and leave this blank (v3 auth) (OS_USER_ID).",
+			Sensitive: true,
 		}, {
-			Name: "domain",
-			Help: "User domain - optional (v3 auth) (OS_USER_DOMAIN_NAME)",
+			Name:      "domain",
+			Help:      "User domain - optional (v3 auth) (OS_USER_DOMAIN_NAME)",
+			Sensitive: true,
 		}, {
-			Name: "tenant",
-			Help: "Tenant name - optional for v1 auth, this or tenant_id required otherwise (OS_TENANT_NAME or OS_PROJECT_NAME).",
+			Name:      "tenant",
+			Help:      "Tenant name - optional for v1 auth, this or tenant_id required otherwise (OS_TENANT_NAME or OS_PROJECT_NAME).",
+			Sensitive: true,
 		}, {
-			Name: "tenant_id",
-			Help: "Tenant ID - optional for v1 auth, this or tenant required otherwise (OS_TENANT_ID).",
+			Name:      "tenant_id",
+			Help:      "Tenant ID - optional for v1 auth, this or tenant required otherwise (OS_TENANT_ID).",
+			Sensitive: true,
 		}, {
-			Name: "tenant_domain",
-			Help: "Tenant domain - optional (v3 auth) (OS_PROJECT_DOMAIN_NAME).",
+			Name:      "tenant_domain",
+			Help:      "Tenant domain - optional (v3 auth) (OS_PROJECT_DOMAIN_NAME).",
+			Sensitive: true,
 		}, {
 			Name: "region",
 			Help: "Region name - optional (OS_REGION_NAME).",
@@ -140,17 +175,21 @@ func init() {
 			Name: "storage_url",
 			Help: "Storage URL - optional (OS_STORAGE_URL).",
 		}, {
-			Name: "auth_token",
-			Help: "Auth Token from alternate authentication - optional (OS_AUTH_TOKEN).",
+			Name:      "auth_token",
+			Help:      "Auth Token from alternate authentication - optional (OS_AUTH_TOKEN).",
+			Sensitive: true,
 		}, {
-			Name: "application_credential_id",
-			Help: "Application Credential ID (OS_APPLICATION_CREDENTIAL_ID).",
+			Name:      "application_credential_id",
+			Help:      "Application Credential ID (OS_APPLICATION_CREDENTIAL_ID).",
+			Sensitive: true,
 		}, {
-			Name: "application_credential_name",
-			Help: "Application Credential Name (OS_APPLICATION_CREDENTIAL_NAME).",
+			Name:      "application_credential_name",
+			Help:      "Application Credential Name (OS_APPLICATION_CREDENTIAL_NAME).",
+			Sensitive: true,
 		}, {
-			Name: "application_credential_secret",
-			Help: "Application Credential Secret (OS_APPLICATION_CREDENTIAL_SECRET).",
+			Name:      "application_credential_secret",
+			Help:      "Application Credential Secret (OS_APPLICATION_CREDENTIAL_SECRET).",
+			Sensitive: true,
 		}, {
 			Name:    "auth_version",
 			Help:    "AuthVersion - optional - set to (1,2,3) if your auth URL has no version (ST_AUTH_VERSION).",
@@ -222,6 +261,7 @@ type Options struct {
 	EndpointType                string               `config:"endpoint_type"`
 	ChunkSize                   fs.SizeSuffix        `config:"chunk_size"`
 	NoChunk                     bool                 `config:"no_chunk"`
+	NoLargeObjects              bool                 `config:"no_large_objects"`
 	Enc                         encoder.MultiEncoder `config:"encoding"`
 }
 
@@ -268,7 +308,7 @@ func (f *Fs) Root() string {
 // String converts this Fs to a string
 func (f *Fs) String() string {
 	if f.rootContainer == "" {
-		return fmt.Sprintf("Swift root")
+		return "Swift root"
 	}
 	if f.rootDirectory == "" {
 		return fmt.Sprintf("Swift container %s", f.rootContainer)
@@ -521,7 +561,7 @@ func (f *Fs) newObjectWithInfo(ctx context.Context, remote string, info *swift.O
 	// returned as 0 bytes in the listing.  Correct this here by
 	// making sure we read the full metadata for all 0 byte files.
 	// We don't read the metadata for directory marker objects.
-	if info != nil && info.Bytes == 0 && info.ContentType != "application/directory" {
+	if info != nil && info.Bytes == 0 && info.ContentType != "application/directory" && !o.fs.opt.NoLargeObjects {
 		err := o.readMetaData(ctx) // reads info and headers, returning an error
 		if err == fs.ErrorObjectNotFound {
 			// We have a dangling large object here so just return the original metadata
@@ -790,7 +830,7 @@ func (f *Fs) About(ctx context.Context) (usage *fs.Usage, err error) {
 
 // Put the object into the container
 //
-// Copy the reader in to the new object which is returned
+// Copy the reader in to the new object which is returned.
 //
 // The new object may have been created if an error is returned
 func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
@@ -902,9 +942,9 @@ func (f *Fs) Purge(ctx context.Context, dir string) error {
 
 // Copy src to this remote using server-side copy operations.
 //
-// This is stored with the remote path given
+// This is stored with the remote path given.
 //
-// It returns the destination Object and a possible error
+// It returns the destination Object and a possible error.
 //
 // Will only be called if src.Fs().Name() == f.Name()
 //
@@ -1019,7 +1059,7 @@ func copyLargeObject(ctx context.Context, f *Fs, src *Object, dstContainer strin
 	return err
 }
 
-//remove copied segments when copy process failed
+// remove copied segments when copy process failed
 func handleCopyFail(ctx context.Context, f *Fs, segmentsContainer string, segments []string, err error) {
 	fs.Debugf(f, "handle copy segment fail")
 	if err == nil {
@@ -1100,15 +1140,24 @@ func (o *Object) hasHeader(ctx context.Context, header string) (bool, error) {
 
 // isDynamicLargeObject checks for X-Object-Manifest header
 func (o *Object) isDynamicLargeObject(ctx context.Context) (bool, error) {
+	if o.fs.opt.NoLargeObjects {
+		return false, nil
+	}
 	return o.hasHeader(ctx, "X-Object-Manifest")
 }
 
 // isStaticLargeObjectFile checks for the X-Static-Large-Object header
 func (o *Object) isStaticLargeObject(ctx context.Context) (bool, error) {
+	if o.fs.opt.NoLargeObjects {
+		return false, nil
+	}
 	return o.hasHeader(ctx, "X-Static-Large-Object")
 }
 
 func (o *Object) isLargeObject(ctx context.Context) (result bool, err error) {
+	if o.fs.opt.NoLargeObjects {
+		return false, nil
+	}
 	result, err = o.hasHeader(ctx, "X-Static-Large-Object")
 	if result {
 		return
@@ -1140,10 +1189,11 @@ func (o *Object) Size() int64 {
 // decodeMetaData sets the metadata in the object from a swift.Object
 //
 // Sets
-//  o.lastModified
-//  o.size
-//  o.md5
-//  o.contentType
+//
+//	o.lastModified
+//	o.size
+//	o.md5
+//	o.contentType
 func (o *Object) decodeMetaData(info *swift.Object) (err error) {
 	o.lastModified = info.LastModified
 	o.size = info.Bytes
@@ -1183,7 +1233,6 @@ func (o *Object) readMetaData(ctx context.Context) (err error) {
 }
 
 // ModTime returns the modification time of the object
-//
 //
 // It attempts to read the objects mtime and if that isn't present the
 // LastModified returned in the http headers
@@ -1271,7 +1320,7 @@ func (o *Object) getSegmentsLargeObject(ctx context.Context) (map[string][]strin
 		if _, ok := containerSegments[segmentContainer]; !ok {
 			containerSegments[segmentContainer] = make([]string, 0, len(segmentObjects))
 		}
-		segments, _ := containerSegments[segmentContainer]
+		segments := containerSegments[segmentContainer]
 		segments = append(segments, segment.Name)
 		containerSegments[segmentContainer] = segments
 	}
@@ -1290,23 +1339,6 @@ func (o *Object) removeSegmentsLargeObject(ctx context.Context, containerSegment
 		}
 	}
 	return nil
-}
-
-func (o *Object) getSegmentsDlo(ctx context.Context) (segmentsContainer string, prefix string, err error) {
-	if err = o.readMetaData(ctx); err != nil {
-		return
-	}
-	dirManifest := o.headers["X-Object-Manifest"]
-	dirManifest, err = url.PathUnescape(dirManifest)
-	if err != nil {
-		return
-	}
-	delimiter := strings.Index(dirManifest, "/")
-	if len(dirManifest) == 0 || delimiter < 0 {
-		err = errors.New("Missing or wrong structure of manifest of Dynamic large object")
-		return
-	}
-	return dirManifest[:delimiter], dirManifest[delimiter+1:], nil
 }
 
 // urlEncode encodes a string so that it is a valid URL
@@ -1363,7 +1395,7 @@ func (o *Object) updateChunks(ctx context.Context, in0 io.Reader, headers swift.
 			return
 		}
 		fs.Debugf(o, "Delete segments when err raise %v", err)
-		if segmentInfos == nil || len(segmentInfos) == 0 {
+		if len(segmentInfos) == 0 {
 			return
 		}
 		_ctx := context.Background()
@@ -1418,7 +1450,7 @@ func (o *Object) updateChunks(ctx context.Context, in0 io.Reader, headers swift.
 }
 
 func deleteChunks(ctx context.Context, o *Object, segmentsContainer string, segmentInfos []string) {
-	if segmentInfos == nil || len(segmentInfos) == 0 {
+	if len(segmentInfos) == 0 {
 		return
 	}
 	for _, v := range segmentInfos {
@@ -1464,7 +1496,7 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	headers := m.ObjectHeaders()
 	fs.OpenOptionAddHeaders(options, headers)
 
-	if size > int64(o.fs.opt.ChunkSize) || (size == -1 && !o.fs.opt.NoChunk) {
+	if (size > int64(o.fs.opt.ChunkSize) || (size == -1 && !o.fs.opt.NoChunk)) && !o.fs.opt.NoLargeObjects {
 		_, err = o.updateChunks(ctx, in, headers, size, contentType)
 		if err != nil {
 			return err
@@ -1540,6 +1572,10 @@ func (o *Object) Remove(ctx context.Context) (err error) {
 	// Remove file/manifest first
 	err = o.fs.pacer.Call(func() (bool, error) {
 		err = o.fs.c.ObjectDelete(ctx, container, containerPath)
+		if err == swift.ObjectNotFound {
+			fs.Errorf(o, "Dangling object - ignoring: %v", err)
+			err = nil
+		}
 		return shouldRetry(ctx, err)
 	})
 	if err != nil {

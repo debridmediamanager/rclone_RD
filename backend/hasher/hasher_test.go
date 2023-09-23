@@ -23,6 +23,7 @@ func TestIntegration(t *testing.T) {
 		NilObject:  (*hasher.Object)(nil),
 		UnimplementableFsMethods: []string{
 			"OpenWriterAt",
+			"OpenChunkWriter",
 		},
 		UnimplementableObjectMethods: []string{},
 	}
@@ -33,6 +34,7 @@ func TestIntegration(t *testing.T) {
 			{Name: "TestHasher", Key: "remote", Value: tempDir},
 		}
 		opt.RemoteName = "TestHasher:"
+		opt.QuickTestOK = true
 	}
 	fstests.Run(t, &opt)
 }

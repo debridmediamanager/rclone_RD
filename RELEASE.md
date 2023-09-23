@@ -10,7 +10,7 @@ This file describes how to make the various kinds of releases
 ## Making a release
 
   * git checkout master # see below for stable branch
-  * git pull
+  * git pull # IMPORTANT
   * git status - make sure everything is checked in
   * Check GitHub actions build for master is Green
   * make test # see integration test server or run locally
@@ -21,6 +21,7 @@ This file describes how to make the various kinds of releases
   * git status - to check for new man pages - git add them
   * git commit -a -v -m "Version v1.XX.0"
   * make retag
+  * git push origin # without --follow-tags so it doesn't push the tag if it fails
   * git push --follow-tags origin
   * # Wait for the GitHub builds to complete then...
   * make fetch_binaries
@@ -53,6 +54,14 @@ doing that so it may be necessary to roll back dependencies to the
 version specified by `make updatedirect` in order to get rclone to
 build.
 
+## Tidy beta
+
+At some point after the release run
+
+    bin/tidy-beta v1.55
+
+where the version number is that of a couple ago to remove old beta binaries.
+
 ## Making a point release
 
 If rclone needs a point release due to some horrendous bug:
@@ -66,8 +75,7 @@ Set vars
 First make the release branch.  If this is a second point release then
 this will be done already.
 
-  * git branch ${BASE_TAG} ${BASE_TAG}-stable
-  * git co ${BASE_TAG}-stable
+  * git co -b ${BASE_TAG}-stable ${BASE_TAG}.0
   * make startstable
 
 Now
@@ -81,6 +89,28 @@ Now
   * git checkout ${BASE_TAG}-stable docs/content/changelog.md
   * git commit -a -v -m "Changelog updates from Version ${NEW_TAG}"
   * git push
+
+## Update the website between releases
+
+Create an update website branch based off the last release
+
+    git co -b update-website
+
+If the branch already exists, double check there are no commits that need saving.
+
+Now reset the branch to the last release
+
+    git reset --hard v1.64.0
+
+Create the changes, check them in, test with `make serve` then
+
+    make upload_test_website
+
+Check out https://test.rclone.org and when happy
+
+    make upload_website
+
+Cherry pick any changes back to master and the stable branch if it is active.
 
 ## Making a manual build of docker
 

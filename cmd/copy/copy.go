@@ -1,3 +1,4 @@
+// Package copy provides the copy command.
 package copy
 
 import (
@@ -18,7 +19,7 @@ var (
 func init() {
 	cmd.Root.AddCommand(commandDefinition)
 	cmdFlags := commandDefinition.Flags()
-	flags.BoolVarP(cmdFlags, &createEmptySrcDirs, "create-empty-src-dirs", "", createEmptySrcDirs, "Create empty source dirs on destination after copy")
+	flags.BoolVarP(cmdFlags, &createEmptySrcDirs, "create-empty-src-dirs", "", createEmptySrcDirs, "Create empty source dirs on destination after copy", "")
 }
 
 var commandDefinition = &cobra.Command{
@@ -28,12 +29,17 @@ var commandDefinition = &cobra.Command{
 	Long: strings.ReplaceAll(`
 Copy the source to the destination.  Does not transfer files that are
 identical on source and destination, testing by size and modification
-time or MD5SUM.  Doesn't delete files from the destination.
+time or MD5SUM.  Doesn't delete files from the destination. If you
+want to also delete files from destination, to make it match source,
+use the [sync](/commands/rclone_sync/) command instead.
 
 Note that it is always the contents of the directory that is synced,
-not the directory so when source:path is a directory, it's the
+not the directory itself. So when source:path is a directory, it's the
 contents of source:path that are copied, not the directory name and
 contents.
+
+To copy single files, use the [copyto](/commands/rclone_copyto/)
+command instead.
 
 If dest:path doesn't exist, it is created and the source:path contents
 go there.
@@ -77,6 +83,9 @@ recently very efficiently like this:
 
 **Note**: Use the |--dry-run| or the |--interactive|/|-i| flag to test without copying anything.
 `, "|", "`"),
+	Annotations: map[string]string{
+		"groups": "Copy,Filter,Listing,Important",
+	},
 	Run: func(command *cobra.Command, args []string) {
 
 		cmd.CheckArgs(2, 2, command, args)

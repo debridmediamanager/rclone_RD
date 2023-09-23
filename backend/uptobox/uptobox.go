@@ -1,3 +1,4 @@
+// Package uptobox provides an interface to the Uptobox storage system.
 package uptobox
 
 import (
@@ -6,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/url"
 	"path"
@@ -43,8 +43,14 @@ func init() {
 		Description: "Uptobox",
 		NewFs:       NewFs,
 		Options: []fs.Option{{
-			Help: "Your access token.\n\nGet it from https://uptobox.com/my_account.",
-			Name: "access_token",
+			Help:      "Your access token.\n\nGet it from https://uptobox.com/my_account.",
+			Name:      "access_token",
+			Sensitive: true,
+		}, {
+			Help:     "Set to make uploaded files private",
+			Name:     "private",
+			Advanced: true,
+			Default:  false,
 		}, {
 			Name:     config.ConfigEncoding,
 			Help:     config.ConfigEncodingHelp,
@@ -63,6 +69,7 @@ func init() {
 // Options defines the configuration for this backend
 type Options struct {
 	AccessToken string               `config:"access_token"`
+	Private     bool                 `config:"private"`
 	Enc         encoder.MultiEncoder `config:"encoding"`
 }
 
@@ -75,6 +82,7 @@ type Fs struct {
 	srv      *rest.Client
 	pacer    *fs.Pacer
 	IDRegexp *regexp.Regexp
+	public   string // "0" to make objects private
 }
 
 // Object represents an Uptobox object
@@ -162,8 +170,8 @@ func (f *Fs) splitPathFull(pth string) (string, string) {
 	return "//" + fullPath[:i], fullPath[i+1:]
 }
 
-// splitPath is modified splitPath version that doesn't include the seperator
-// in the base part
+// splitPath is modified splitPath version that doesn't include the separator
+// in the base path
 func (f *Fs) splitPath(pth string) (string, string) {
 	// chop of any leading or trailing '/'
 	pth = strings.Trim(pth, "/")
@@ -201,16 +209,23 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 		opt:   *opt,
 		pacer: fs.NewPacer(ctx, pacer.NewDefault(pacer.MinSleep(minSleep), pacer.MaxSleep(maxSleep), pacer.DecayConstant(decayConstant), pacer.AttackConstant(attackConstant))),
 	}
-	f.root = root
+	if root == "/" || root == "." {
+		f.root = ""
+	} else {
+		f.root = root
+	}
 	f.features = (&fs.Features{
 		DuplicateFiles:          true,
 		CanHaveEmptyDirectories: true,
 		ReadMimeType:            false,
 	}).Fill(ctx, f)
+	if f.opt.Private {
+		f.public = "0"
+	}
 
 	client := fshttp.NewClient(ctx)
 	f.srv = rest.NewClient(client).SetRoot(apiBaseURL)
-	f.IDRegexp = regexp.MustCompile("https://uptobox.com/([a-zA-Z0-9]+)")
+	f.IDRegexp = regexp.MustCompile(`^https://uptobox\.com/([a-zA-Z0-9]+)`)
 
 	_, err = f.readMetaDataForPath(ctx, f.dirPath(""), &api.MetadataRequestOptions{Limit: 10})
 	if err != nil {
@@ -234,7 +249,7 @@ func NewFs(ctx context.Context, name string, root string, config configmap.Mappe
 func (f *Fs) decodeError(resp *http.Response, response interface{}) (err error) {
 	defer fs.CheckClose(resp.Body, &err)
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
 	}
@@ -468,13 +483,13 @@ func (f *Fs) updateFileInformation(ctx context.Context, update *api.UpdateFileIn
 	return err
 }
 
-func (f *Fs) putUnchecked(ctx context.Context, in io.Reader, remote string, size int64, options ...fs.OpenOption) (fs.Object, error) {
+func (f *Fs) putUnchecked(ctx context.Context, in io.Reader, remote string, size int64, options ...fs.OpenOption) error {
 	if size > int64(200e9) { // max size 200GB
-		return nil, errors.New("File too big, cant upload")
+		return errors.New("file too big, can't upload")
 	} else if size == 0 {
-		return nil, fs.ErrorCantUploadEmptyFiles
+		return fs.ErrorCantUploadEmptyFiles
 	}
-	// yes it does take take 4 requests if we're uploading to root and 6+ if we're uploading to any subdir :(
+	// yes it does take 4 requests if we're uploading to root and 6+ if we're uploading to any subdir :(
 
 	// create upload request
 	opts := rest.Opts{
@@ -490,19 +505,19 @@ func (f *Fs) putUnchecked(ctx context.Context, in io.Reader, remote string, size
 		return shouldRetry(ctx, resp, err)
 	})
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if info.StatusCode != 0 {
-		return nil, fmt.Errorf("putUnchecked: api error: %d - %s", info.StatusCode, info.Message)
+		return fmt.Errorf("putUnchecked api error: %d - %s", info.StatusCode, info.Message)
 	}
 	// we need to have a safe name for the upload to work
 	tmpName := "rcloneTemp" + random.String(8)
 	upload, err := f.uploadFile(ctx, in, size, tmpName, info.Data.UploadLink, options...)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if len(upload.Files) != 1 {
-		return nil, errors.New("Upload: unexpected response")
+		return errors.New("upload unexpected response")
 	}
 	match := f.IDRegexp.FindStringSubmatch(upload.Files[0].URL)
 
@@ -517,23 +532,27 @@ func (f *Fs) putUnchecked(ctx context.Context, in io.Reader, remote string, size
 			// this might need some more error handling. if any of the following requests fail
 			// we'll leave an orphaned temporary file floating around somewhere
 			// they rarely fail though
-			return nil, err
+			return err
 		}
 
 		err = f.move(ctx, fullBase, match[1])
 		if err != nil {
-			return nil, err
+			return err
 		}
 	}
 
 	// rename file to final name
-	err = f.updateFileInformation(ctx, &api.UpdateFileInformation{Token: f.opt.AccessToken, FileCode: match[1], NewName: f.opt.Enc.FromStandardName(leaf)})
+	err = f.updateFileInformation(ctx, &api.UpdateFileInformation{
+		Token:    f.opt.AccessToken,
+		FileCode: match[1],
+		NewName:  f.opt.Enc.FromStandardName(leaf),
+		Public:   f.public,
+	})
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	// finally fetch the file object.
-	return f.NewObject(ctx, remote)
+	return nil
 }
 
 // Put in to the remote path with the modTime given of the given size
@@ -563,7 +582,11 @@ func (f *Fs) Put(ctx context.Context, in io.Reader, src fs.ObjectInfo, options .
 // This will create a duplicate if we upload a new file without
 // checking to see if there is one already - use Put() for that.
 func (f *Fs) PutUnchecked(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) (fs.Object, error) {
-	return f.putUnchecked(ctx, in, src.Remote(), src.Size(), options...)
+	err := f.putUnchecked(ctx, in, src.Remote(), src.Size(), options...)
+	if err != nil {
+		return nil, err
+	}
+	return f.NewObject(ctx, src.Remote())
 }
 
 // CreateDir dir creates a directory with the given parent path
@@ -656,7 +679,7 @@ func (f *Fs) Rmdir(ctx context.Context, dir string) error {
 	if err != nil {
 		return err
 	}
-	if info.Data.CurrentFolder.FileCount > 0 {
+	if len(info.Data.Folders) > 0 || len(info.Data.Files) > 0 {
 		return fs.ErrorDirectoryNotEmpty
 	}
 
@@ -692,15 +715,19 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 
 	// rename to final name if we need to
 	if needRename {
-		err := f.updateFileInformation(ctx, &api.UpdateFileInformation{Token: f.opt.AccessToken, FileCode: srcObj.code, NewName: f.opt.Enc.FromStandardName(dstLeaf)})
+		err := f.updateFileInformation(ctx, &api.UpdateFileInformation{
+			Token:    f.opt.AccessToken,
+			FileCode: srcObj.code,
+			NewName:  f.opt.Enc.FromStandardName(dstLeaf),
+			Public:   f.public,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("move: failed final rename: %w", err)
 		}
 	}
 
 	// copy the old object and apply the changes
-	var newObj Object
-	newObj = *srcObj
+	newObj := *srcObj
 	newObj.remote = remote
 	newObj.fs = f
 	return &newObj, nil
@@ -753,9 +780,9 @@ func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string
 	if err != nil {
 		return fmt.Errorf("dirmove: source not found: %w", err)
 	}
-	// check if the destination allready exists
+	// check if the destination already exists
 	dstPath := f.dirPath(dstRemote)
-	dstInfo, err := f.readMetaDataForPath(ctx, dstPath, &api.MetadataRequestOptions{Limit: 1})
+	_, err = f.readMetaDataForPath(ctx, dstPath, &api.MetadataRequestOptions{Limit: 1})
 	if err == nil {
 		return fs.ErrorDirExists
 	}
@@ -768,7 +795,7 @@ func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string
 	}
 
 	// find the destination parent dir
-	dstInfo, err = f.readMetaDataForPath(ctx, dstBase, &api.MetadataRequestOptions{Limit: 1})
+	dstInfo, err := f.readMetaDataForPath(ctx, dstBase, &api.MetadataRequestOptions{Limit: 1})
 	if err != nil {
 		return fmt.Errorf("dirmove: failed to read destination: %w", err)
 	}
@@ -778,7 +805,7 @@ func (f *Fs) DirMove(ctx context.Context, src fs.Fs, srcRemote, dstRemote string
 	needMove := srcBase != dstBase
 
 	// if we have to rename we'll have to use a temporary name since
-	// there could allready be a directory with the same name as the src directory
+	// there could already be a directory with the same name as the src directory
 	if needRename {
 		// rename to a temporary name
 		tmpName := "rcloneTemp" + random.String(8)
@@ -885,7 +912,12 @@ func (f *Fs) Copy(ctx context.Context, src fs.Object, remote string) (fs.Object,
 	}
 
 	if needRename {
-		err := f.updateFileInformation(ctx, &api.UpdateFileInformation{Token: f.opt.AccessToken, FileCode: newObj.(*Object).code, NewName: f.opt.Enc.FromStandardName(dstLeaf)})
+		err := f.updateFileInformation(ctx, &api.UpdateFileInformation{
+			Token:    f.opt.AccessToken,
+			FileCode: newObj.(*Object).code,
+			NewName:  f.opt.Enc.FromStandardName(dstLeaf),
+			Public:   f.public,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("copy: failed final rename: %w", err)
 		}
@@ -915,17 +947,13 @@ func (o *Object) Remote() string {
 	return o.remote
 }
 
-// Returns the full remote path for the object
-func (o *Object) filePath() string {
-	return o.fs.dirPath(o.remote)
-}
-
 // ModTime returns the modification time of the object
 //
 // It attempts to read the objects mtime and if that isn't present the
 // LastModified returned in the http headers
 func (o *Object) ModTime(ctx context.Context) time.Time {
-	return time.Now()
+	ci := fs.GetConfig(ctx)
+	return time.Time(ci.DefaultTime)
 }
 
 // Size returns the size of an object in bytes
@@ -993,7 +1021,7 @@ func (o *Object) Open(ctx context.Context, options ...fs.OpenOption) (in io.Read
 
 // Update the already existing object
 //
-// Copy the reader into the object updating modTime and size
+// Copy the reader into the object updating modTime and size.
 //
 // The new object may have been created if an error is returned
 func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, options ...fs.OpenOption) error {
@@ -1002,7 +1030,7 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	}
 
 	// upload with new size but old name
-	info, err := o.fs.putUnchecked(ctx, in, o.Remote(), src.Size(), options...)
+	err := o.fs.putUnchecked(ctx, in, o.Remote(), src.Size(), options...)
 	if err != nil {
 		return err
 	}
@@ -1011,6 +1039,12 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	err = o.Remove(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to remove old version: %w", err)
+	}
+
+	// Fetch new object after deleting the duplicate
+	info, err := o.fs.NewObject(ctx, o.Remote())
+	if err != nil {
+		return err
 	}
 
 	// Replace guts of old object with new one

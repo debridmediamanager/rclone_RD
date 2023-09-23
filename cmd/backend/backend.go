@@ -1,3 +1,4 @@
+// Package backend provides the backend command.
 package backend
 
 import (
@@ -23,8 +24,8 @@ var (
 func init() {
 	cmd.Root.AddCommand(commandDefinition)
 	cmdFlags := commandDefinition.Flags()
-	flags.StringArrayVarP(cmdFlags, &options, "option", "o", options, "Option in the form name=value or name")
-	flags.BoolVarP(cmdFlags, &useJSON, "json", "", useJSON, "Always output in JSON format")
+	flags.StringArrayVarP(cmdFlags, &options, "option", "o", options, "Option in the form name=value or name", "")
+	flags.BoolVarP(cmdFlags, &useJSON, "json", "", useJSON, "Always output in JSON format", "")
 }
 
 var commandDefinition = &cobra.Command{
@@ -57,6 +58,10 @@ Pass arguments to the backend by placing them on the end of the line
 Note to run these commands on a running backend then see
 [backend/command](/rc/#backend-command) in the rc docs.
 `,
+	Annotations: map[string]string{
+		"versionIntroduced": "v1.52",
+		"groups":            "Important",
+	},
 	RunE: func(command *cobra.Command, args []string) error {
 		cmd.CheckArgs(2, 1e6, command, args)
 		name, remote := args[0], args[1]
@@ -94,8 +99,14 @@ Note to run these commands on a running backend then see
 				out, err = doCommand(context.Background(), name, arg, opt)
 			}
 			if err != nil {
+				if err == fs.ErrorCommandNotFound {
+					extra := ""
+					if f.Features().Overlay {
+						extra = " (try the underlying remote)"
+					}
+					return fmt.Errorf("%q %w%s", name, err, extra)
+				}
 				return fmt.Errorf("command %q failed: %w", name, err)
-
 			}
 			// Output the result
 			writeJSON := false
@@ -145,7 +156,7 @@ Run them with
 
 The help below will explain what arguments each command takes.
 
-See [the "rclone backend" command](/commands/rclone_backend/) for more
+See the [backend](/commands/rclone_backend/) command for more
 info on how to pass options and arguments.
 
 These can be run on a running backend using the rc command

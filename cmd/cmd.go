@@ -35,6 +35,7 @@ import (
 	fslog "github.com/rclone/rclone/fs/log"
 	"github.com/rclone/rclone/fs/rc/rcflags"
 	"github.com/rclone/rclone/fs/rc/rcserver"
+	fssync "github.com/rclone/rclone/fs/sync"
 	"github.com/rclone/rclone/lib/atexit"
 	"github.com/rclone/rclone/lib/buildinfo"
 	"github.com/rclone/rclone/lib/exitcode"
@@ -47,13 +48,13 @@ import (
 // Globals
 var (
 	// Flags
-	cpuProfile      = flags.StringP("cpuprofile", "", "", "Write cpu profile to file")
-	memProfile      = flags.StringP("memprofile", "", "", "Write memory profile to file")
-	statsInterval   = flags.DurationP("stats", "", time.Minute*1, "Interval between printing stats, e.g. 500ms, 60s, 5m (0 to disable)")
-	dataRateUnit    = flags.StringP("stats-unit", "", "bytes", "Show data rate in stats as either 'bits' or 'bytes' per second")
+	cpuProfile      = flags.StringP("cpuprofile", "", "", "Write cpu profile to file", "Debugging")
+	memProfile      = flags.StringP("memprofile", "", "", "Write memory profile to file", "Debugging")
+	statsInterval   = flags.DurationP("stats", "", time.Minute*1, "Interval between printing stats, e.g. 500ms, 60s, 5m (0 to disable)", "Logging")
+	dataRateUnit    = flags.StringP("stats-unit", "", "bytes", "Show data rate in stats as either 'bits' or 'bytes' per second", "Logging")
 	version         bool
-	retries         = flags.IntP("retries", "", 3, "Retry operations this many times if they fail")
-	retriesInterval = flags.DurationP("retries-sleep", "", 0, "Interval between retrying operations if they fail, e.g. 500ms, 60s, 5m (0 to disable)")
+	retries         = flags.IntP("retries", "", 3, "Retry operations this many times if they fail", "Config")
+	retriesInterval = flags.DurationP("retries-sleep", "", 0, "Interval between retrying operations if they fail, e.g. 500ms, 60s, 5m (0 to disable)", "Config")
 	// Errors
 	errorCommandNotFound    = errors.New("command not found")
 	errorUncategorized      = errors.New("uncategorized error")
@@ -73,11 +74,13 @@ func ShowVersion() {
 
 	linking, tagString := buildinfo.GetLinkingAndTags()
 
+	arch := buildinfo.GetArch()
+
 	fmt.Printf("rclone %s\n", fs.Version)
 	fmt.Printf("- os/version: %s\n", osVersion)
 	fmt.Printf("- os/kernel: %s\n", osKernel)
 	fmt.Printf("- os/type: %s\n", runtime.GOOS)
-	fmt.Printf("- os/arch: %s\n", runtime.GOARCH)
+	fmt.Printf("- os/arch: %s\n", arch)
 	fmt.Printf("- go/version: %s\n", runtime.Version())
 	fmt.Printf("- go/linking: %s\n", linking)
 	fmt.Printf("- go/tags: %s\n", tagString)
@@ -117,7 +120,7 @@ func newFsFileAddFilter(remote string) (fs.Fs, string) {
 	f, fileName := NewFsFile(remote)
 	if fileName != "" {
 		if !fi.InActive() {
-			err := fmt.Errorf("Can't limit to single files when using filters: %v", remote)
+			err := fmt.Errorf("can't limit to single files when using filters: %v", remote)
 			err = fs.CountError(err)
 			log.Fatalf(err.Error())
 		}
@@ -273,7 +276,7 @@ func Run(Retry bool, showStats bool, cmd *cobra.Command, f func() error) {
 			break
 		}
 		if retryAfter := accounting.GlobalStats().RetryAfter(); !retryAfter.IsZero() {
-			d := retryAfter.Sub(time.Now())
+			d := time.Until(retryAfter)
 			if d > 0 {
 				fs.Logf(nil, "Received retry after error - sleeping until %s (%v)", retryAfter.Format(time.RFC3339Nano), d)
 				time.Sleep(d)
@@ -319,6 +322,12 @@ func Run(Retry bool, showStats bool, cmd *cobra.Command, f func() error) {
 		if err != nil {
 			fs.Errorf(nil, "Failed to list open files: %v", err)
 		}
+	}
+
+	// clear cache and shutdown backends
+	cache.Clear()
+	if lastErr := accounting.GlobalStats().GetLastError(); cmdErr == nil {
+		cmdErr = lastErr
 	}
 
 	// Log the final error message and exit
@@ -393,9 +402,15 @@ func initConfig() {
 	// Start accounting
 	accounting.Start(ctx)
 
-	// Hide console window
+	// Configure console
 	if ci.NoConsole {
+		// Hide the console window
 		terminal.HideConsole()
+	} else {
+		// Enable color support on stdout if possible.
+		// This enables virtual terminal processing on Windows 10,
+		// adding native support for ANSI/VT100 escape sequences.
+		terminal.EnableColorsStdout()
 	}
 
 	// Load filters
@@ -458,7 +473,7 @@ func initConfig() {
 		})
 	}
 
-	if m, _ := regexp.MatchString("^(bits|bytes)$", *dataRateUnit); m == false {
+	if m, _ := regexp.MatchString("^(bits|bytes)$", *dataRateUnit); !m {
 		fs.Errorf(nil, "Invalid unit passed to --stats-unit. Defaulting to bytes.")
 		ci.DataRateUnit = "bytes"
 	} else {
@@ -487,6 +502,8 @@ func resolveExitCode(err error) {
 		os.Exit(exitcode.UncategorizedError)
 	case errors.Is(err, accounting.ErrorMaxTransferLimitReached):
 		os.Exit(exitcode.TransferExceeded)
+	case errors.Is(err, fssync.ErrorMaxDurationReached):
+		os.Exit(exitcode.DurationExceeded)
 	case fserrors.ShouldRetry(err):
 		os.Exit(exitcode.RetryError)
 	case fserrors.IsNoRetryError(err), fserrors.IsNoLowLevelRetryError(err):

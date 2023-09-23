@@ -60,6 +60,11 @@ func (cds *contentDirectoryService) cdsObjectToUpnpavObject(cdsObject object, fi
 	var mimeType string
 	if o, ok := fileInfo.DirEntry().(fs.Object); ok {
 		mimeType = fs.MimeType(context.TODO(), o)
+		// If backend doesn't know what the mime type is then
+		// try getting it from the file name
+		if mimeType == "application/octet-stream" {
+			mimeType = fs.MimeTypeFromName(fileInfo.Name())
+		}
 	} else {
 		mimeType = fs.MimeTypeFromName(fileInfo.Name())
 	}
@@ -158,7 +163,9 @@ func mediaWithResources(nodes vfs.Nodes) (vfs.Nodes, map[vfs.Node]vfs.Nodes) {
 	for _, node := range nodes {
 		baseName, ext := splitExt(strings.ToLower(node.Name()))
 		switch ext {
-		case ".srt":
+		case ".srt", ".ass", ".ssa", ".sub", ".idx", ".sup", ".jss", ".txt", ".usf", ".cue", ".vtt", ".css":
+			// .idx should be with .sub, .css should be with vtt otherwise they should be culled,
+			// and their mimeTypes are not consistent, but anyway these negatives don't throw errors.
 			subtitlesByName[baseName] = node
 		default:
 			mediaByName[baseName] = append(mediaByName[baseName], node)

@@ -3,21 +3,20 @@ package serve
 import (
 	"errors"
 	"html/template"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"testing"
 	"time"
 
+	libhttp "github.com/rclone/rclone/lib/http"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/rclone/rclone/cmd/serve/http/data"
 )
 
 func GetTemplate(t *testing.T) *template.Template {
-	htmlTemplate, err := data.GetTemplate("../../../cmd/serve/http/testdata/golden/testindex.html")
+	htmlTemplate, err := libhttp.GetTemplate("../../../cmd/serve/http/testdata/golden/testindex.html")
 	require.NoError(t, err)
 	return htmlTemplate
 }
@@ -94,7 +93,7 @@ func TestError(t *testing.T) {
 	Error("potato", w, "sausage", err)
 	resp := w.Result()
 	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
-	body, _ := ioutil.ReadAll(resp.Body)
+	body, _ := io.ReadAll(resp.Body)
 	assert.Equal(t, "sausage.\n", string(body))
 }
 
@@ -108,7 +107,7 @@ func TestServe(t *testing.T) {
 	d.Serve(w, r)
 	resp := w.Result()
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	body, _ := ioutil.ReadAll(resp.Body)
+	body, _ := io.ReadAll(resp.Body)
 	assert.Equal(t, `<!DOCTYPE html>
 <html lang="en">
 <head>
